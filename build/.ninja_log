@@ -1,0 +1,20 @@
+# ninja log v7
+3	840	1773931653813392939	CMakeFiles/SceneRTXTester.dir/Source/Common/Camera.cpp.o	1cca918926c73253
+6	1222	1773931653816686874	CMakeFiles/SceneRTXTester.dir/Source/Common/Renderer.cpp.o	ad097b61fcd3e3b3
+11	1360	1773931653821893235	CMakeFiles/SceneRTXTester.dir/Source/Common/SceneLoader.cpp.o	acd223b7f85eb01b
+12	1408	1773931653823026533	CMakeFiles/SceneRTXTester.dir/Source/Common/SceneLoaderFactory.cpp.o	c69726c5b07d4cf4
+2	1581	1773931653812586018	CMakeFiles/SceneRTXTester.dir/Source/Common/BVHBuilder.cpp.o	c7de8da4c9fb751f
+1	1716	1773931653811039926	CMakeFiles/SceneRTXTester.dir/Source/main.cpp.o	f6b397b897a6c078
+8	1725	1773931653818640759	CMakeFiles/SceneRTXTester.dir/Source/Common/RenderManager.cpp.o	efdd29717a9de201
+9	1779	1773931653820326810	CMakeFiles/SceneRTXTester.dir/Source/Common/Scene.cpp.o	544940f4adbf46e4
+4	1857	1773931653814589487	CMakeFiles/SceneRTXTester.dir/Source/Common/OBJLoader.cpp.o	ba27b100d8ed0350
+842	1863	1773931654652813214	CMakeFiles/SceneRTXTester.dir/Source/Common/SceneObject.cpp.o	8a65d8cbf62a636c
+1360	2251	1773931655170724506	CMakeFiles/SceneRTXTester.dir/Source/macOSSpecific/MetalRenderer.cpp.o	4a1e83286729a356
+1	2814	1773931653811974640	CMakeFiles/SceneRTXTester.dir/Source/Common/SceneMetaLoader.cpp.o	3a364273a9de3bf
+1223	3008	1773931655033601891	CMakeFiles/SceneRTXTester.dir/Source/Common/SceneJSONLoader.cpp.o	a94b96935f954a5b
+1409	3048	1773931655219032349	CMakeFiles/SceneRTXTester.dir/Source/macOSSpecific/MetalRenderer.mm.o	a36839b06dccede6
+1582	3072	1773931656879281090	RayTrace.air	7c6812fb48c0b2cd
+1582	3072	1773931656879281090	/Users/angryoldman/Documents/Programming/VsCode/SceneRTXTester/build/RayTrace.air	7c6812fb48c0b2cd
+3050	3232	1773931656861106950	SceneRTXTester	9203faed6481f16b
+3072	3385	1773931657192492320	RayTrace.metallib	50a2fc1b32dbdbbb
+3072	3385	1773931657192492320	/Users/angryoldman/Documents/Programming/VsCode/SceneRTXTester/build/RayTrace.metallib	50a2fc1b32dbdbbb

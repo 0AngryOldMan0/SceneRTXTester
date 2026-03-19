@@ -1,0 +1,4 @@
+/Users/angryoldman/Documents/Programming/VsCode/SceneRTXTester/build/CMakeFiles/Shader.dir
+/Users/angryoldman/Documents/Programming/VsCode/SceneRTXTester/build/CMakeFiles/SceneRTXTester.dir
+/Users/angryoldman/Documents/Programming/VsCode/SceneRTXTester/build/CMakeFiles/edit_cache.dir
+/Users/angryoldman/Documents/Programming/VsCode/SceneRTXTester/build/CMakeFiles/rebuild_cache.dir

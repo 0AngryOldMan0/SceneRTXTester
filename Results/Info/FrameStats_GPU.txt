@@ -1,0 +1,85 @@
+{
+  "Global": {
+    "TotalFrames": 12,
+    "RaysTraced": 99532800,
+    "RaysHit": 0,
+    "TotalVisitedNodes": 0,
+    "AvgVisitedNodesPerRay": 0.000000,
+    "AvgRayTime_ns": 0.000000,
+    "RaysPerSecond": 651270.464940
+  },
+  "Frames": [
+    {
+      "FrameIndex": 0,
+      "FrameRenderTime_ms": 23062.035417,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 1,
+      "FrameRenderTime_ms": 13933.220458,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 2,
+      "FrameRenderTime_ms": 10897.629375,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 3,
+      "FrameRenderTime_ms": 10762.584542,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 4,
+      "FrameRenderTime_ms": 9552.444542,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 5,
+      "FrameRenderTime_ms": 11175.664334,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 6,
+      "FrameRenderTime_ms": 11614.698792,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 7,
+      "FrameRenderTime_ms": 12976.084750,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 8,
+      "FrameRenderTime_ms": 10597.867083,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 9,
+      "FrameRenderTime_ms": 11090.886375,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 10,
+      "FrameRenderTime_ms": 12061.585834,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    },
+    {
+      "FrameIndex": 11,
+      "FrameRenderTime_ms": 15103.970084,
+      "FrameSaveTime_ms": 0.000000,
+      "FrameTotalTime_ms": 0.000000
+    }
+  ]
+}

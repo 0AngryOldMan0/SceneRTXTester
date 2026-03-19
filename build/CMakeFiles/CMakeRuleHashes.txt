@@ -1,0 +1,3 @@
+# Hashes of file build rules.
+c7ce4e30fc6aa0d34b50d589eab3d725 RayTrace.air
+71b4c07e6285deaa5b680719cf8971bc RayTrace.metallib
