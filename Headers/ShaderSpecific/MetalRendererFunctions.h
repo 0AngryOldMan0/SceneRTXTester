@@ -12,6 +12,12 @@
 
 struct SceneMetaResources;
 
+enum class MetalAccumulationMode : std::uint32_t
+{
+    PreviewProgressive = 0,
+    FinalStill = 1
+};
+
 // LevelMeta13+ (PBR):
 // - SceneMetaResources может содержать дополнительные текстуры (normal/orm/rough/metal/ao).
 // - В текущем «all textures» мосте мы складываем *все* текстуры в один общий массив
@@ -38,6 +44,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode> &tlasNodes,
                              const std::vector<SceneInstanceGPU> &instances,
                              const std::vector<Light> &lights,
                              std::uint64_t sceneRevision,
+                             MetalAccumulationMode accumulationMode,
                              int rootIndex,
                              const CameraDataCPU &cameraCPU,
                              const SceneMetaResources *metaRes,

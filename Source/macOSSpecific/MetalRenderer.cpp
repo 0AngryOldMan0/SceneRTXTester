@@ -96,6 +96,15 @@ void MetalRenderer::setMetaResources(const SceneMetaResources *metaRes)
     resetAccumulation();
 }
 
+void MetalRenderer::setAccumulationMode(MetalAccumulationMode mode)
+{
+    if (accumulationMode_ == mode)
+        return;
+
+    accumulationMode_ = mode;
+    resetAccumulation();
+}
+
 bool MetalRenderer::initialize()
 {
     return InitMetalRenderer();
@@ -177,6 +186,7 @@ bool MetalRenderer::renderTexture(const Scene &scene,
                                                  scene.getGlobalInstances(),
                                                  scene.getLights(),
                                                  scene.getSceneRevision(),
+                                                 accumulationMode_,
                                                  scene.getGlobalRootIndex(),
                                                  camData,
                                                  m_metaRes,

@@ -59,7 +59,7 @@ constexpr sampler g_postSampler(address::clamp_to_edge,
 
 
 // --- Accumulation stamp/count packing into accumTex.w (RGBA32Float safe) ---
-// packed = [stamp:8bits | count:24bits]
+// packed = [stamp:8bits | sampleCount:24bits]
 inline uint packStampCount(uint stamp, uint count)
 {
     return ((stamp & 0xFFu) << 24) | (count & 0x00FFFFFFu);
@@ -2478,7 +2478,7 @@ inline float3 tracePathPixel(uint2                  gid,
                              int                    samplesPerPixel,
                              const device LightGPU *lights,
                              uint                   lightCount,
-                             uint                   frameIndex)
+                             uint                   sampleBaseIndex)
 {
     const int   MAX_BOUNCES = 4;
     const float EPSILON_POS = SHADOW_EPS;
@@ -2501,10 +2501,11 @@ inline float3 tracePathPixel(uint2                  gid,
 
     for (int s = 0; s < spp; ++s)
     {
+        uint sampleIndex = sampleBaseIndex + uint(s);
         uint seedBase = uint(gid.x) * 73856093u
                       ^ uint(gid.y) * 19349663u
                       ^ uint(s)     * 83492791u
-                      ^ frameIndex  * 2654435761u;
+                      ^ sampleIndex * 2654435761u;
 
         float jx = 0.0f;
         float jy = 0.0f;
@@ -2766,7 +2767,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                      int                    samplesPerPixel,
                                                      const device LightGPU *lights,
                                                      uint                   lightCount,
-                                                     uint                   frameIndex,
+                                                     uint                   sampleBaseIndex,
                                                      const device MaterialGPU *materials,
                                                      uint                    materialCount,
                                                      const device MaterialGPU_PBR *materialsPBR,
@@ -2805,10 +2806,11 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
 
     for (int s = 0; s < spp; ++s)
     {
+        uint sampleIndex = sampleBaseIndex + uint(s);
         uint seedBase = uint(gid.x) * 73856093u
                       ^ uint(gid.y) * 19349663u
                       ^ uint(s)     * 83492791u
-                      ^ frameIndex  * 2654435761u;
+                      ^ sampleIndex * 2654435761u;
 
         float jx = 0.0f;
         float jy = 0.0f;
@@ -3283,7 +3285,7 @@ kernel void RayTraceTextureKernel(
     constant uint          *triCountPtr   [[buffer(6)]],
     const device LightGPU  *lights        [[buffer(7)]],
     constant uint          *lightCountPtr [[buffer(8)]],
-    constant uint          *frameIndexPtr [[buffer(9)]],
+    constant uint          *sampleCountPtr [[buffer(9)]],
     texture2d<float, access::read_write> accumTex [[texture(0)]],
     texture2d<float, access::write>      hdrTex   [[texture(1)]],
     texture2d<float, access::write>      albedoTex [[texture(2)]],
@@ -3331,7 +3333,7 @@ kernel void RayTraceTextureKernel(
     if (spp <= 0) spp = 1;
 
     uint lightCount = (lightCountPtr != nullptr) ? *lightCountPtr : 0u;
-    uint frameIndex = (frameIndexPtr != nullptr) ? *frameIndexPtr : 0u;
+    uint sampleBaseIndex = (sampleCountPtr != nullptr) ? *sampleCountPtr : 0u;
     uint materialCount = (materialCountPtr != nullptr) ? *materialCountPtr : 0u;
     uint materialPBRCount = (materialPBRCountPtr != nullptr) ? *materialPBRCountPtr : 0u;
     uint emissiveTriangleCount = (emissiveTriangleCountPtr != nullptr) ? *emissiveTriangleCountPtr : 0u;
@@ -3345,7 +3347,7 @@ kernel void RayTraceTextureKernel(
         cam.fovY,
         spp,
         lights, lightCount,
-        frameIndex,
+        sampleBaseIndex,
         materials,
         materialCount,
         materialsPBR,
@@ -3357,6 +3359,7 @@ kernel void RayTraceTextureKernel(
         sceneTextures);
     float3 frameColor = pathResult.color;
     float depthValue = pathResult.depth;
+    uint samplesThisDispatch = (UV_DEBUG_MODE != 0) ? 0u : uint(max(spp, 1));
 
     frameColor = min(frameColor, float3(32.0f));
     albedoTex.write(float4(pathResult.albedo, pathResult.hitMask), gid);
@@ -3383,17 +3386,22 @@ kernel void RayTraceTextureKernel(
         prevAvg   = float3(0.0f);
     }
 
-    float3 newAvg;
-    uint   countNew;
+    float3 newAvg = prevAvg;
+    uint   countNew = countPrev;
     if (countPrev == 0u)
     {
         newAvg   = frameColor;
-        countNew = 1u;
+        countNew = min(samplesThisDispatch, 0x00FFFFFFu);
     }
     else
     {
-        newAvg   = (prevAvg * float(countPrev) + frameColor) / float(countPrev + 1u);
-        countNew = min(countPrev + 1u, 0x00FFFFFFu);
+        uint samplesToAccumulate = min(samplesThisDispatch, 0x00FFFFFFu - countPrev);
+        if (samplesToAccumulate > 0u)
+        {
+            newAvg   = (prevAvg * float(countPrev) + frameColor * float(samplesToAccumulate))
+                     / float(countPrev + samplesToAccumulate);
+            countNew = countPrev + samplesToAccumulate;
+        }
     }
 
     accumTex.write(float4(newAvg, as_type<float>(packStampCount(stampNow, countNew))), gid);

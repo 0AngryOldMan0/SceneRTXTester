@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <fstream>
 
@@ -69,9 +70,16 @@ namespace
     id<MTLComputePipelineState> g_pipelineBloomBlurV   = nil;
     id<MTLComputePipelineState> g_pipelinePostProcess  = nil;
 
-    // Накопительная текстура + счётчик кадров для прогрессивного рендера
+    constexpr uint32_t          kMaxAllTextures = 124;
+    constexpr uint32_t          kAccumulatedSampleCountMax = 0x00FFFFFFu;
+    constexpr uint32_t          kMetalShaderUvDebugMode = 0u; // keep in sync with UV_DEBUG_MODE in RayTrace.metal
+    constexpr std::uint64_t     kInvalidAccumulationHash = std::numeric_limits<std::uint64_t>::max();
+
+    // Накопительная текстура + sample-based state для прогрессивного рендера
     id<MTLTexture>              g_accumTexture    = nil;
-    uint32_t                    g_frameIndex      = 0;
+    uint32_t                    g_accumulatedSampleCount = 0;
+    uint32_t                    g_accumulationDispatchCount = 0;
+    std::uint64_t               g_accumulationStateHash = kInvalidAccumulationHash;
     id<MTLTexture>              g_hdrTexture      = nil;
     id<MTLTexture>              g_albedoTexture   = nil;
     id<MTLTexture>              g_normalTexture   = nil;
@@ -80,9 +88,6 @@ namespace
     id<MTLTexture>              g_outTexture      = nil;
     int                         g_postTextureWidth = 0;
     int                         g_postTextureHeight = 0;
-
-    // --- НОВОЕ: ресурсы материалов/текстур ---
-    constexpr uint32_t          kMaxAllTextures = 124;
 
     id<MTLBuffer>               g_materialBuffer      = nil;
     id<MTLBuffer>               g_materialCountBuffer = nil;
@@ -112,7 +117,7 @@ namespace
     id<MTLBuffer>               g_decalCountBuffer            = nil;
     id<MTLBuffer>               g_camBuffer                   = nil;
     id<MTLBuffer>               g_imgSizeBuffer               = nil;
-    id<MTLBuffer>               g_frameIndexBuffer            = nil;
+    id<MTLBuffer>               g_sampleCountBuffer           = nil;
     id<MTLBuffer>               g_postProcessBuffer           = nil;
 
     std::uint64_t               g_cachedSceneRevision         = 0;
@@ -123,7 +128,9 @@ namespace
     struct TextureFrameProfile
     {
         uint64_t callIndex = 0;
-        uint32_t accumulationFrame = 0;
+        uint32_t accumulatedSamples = 0;
+        uint32_t samplesThisDispatch = 0;
+        MetalAccumulationMode accumulationMode = MetalAccumulationMode::PreviewProgressive;
         uint32_t prototypeTriangles = 0;
         uint32_t totalInstances = 0;
         uint32_t tlasNodeCount = 0;
@@ -317,6 +324,202 @@ namespace
         return true;
     }
 
+    static const char *AccumulationModeName(MetalAccumulationMode mode)
+    {
+        switch (mode)
+        {
+            case MetalAccumulationMode::PreviewProgressive: return "preview_progressive";
+            case MetalAccumulationMode::FinalStill:         return "final_still";
+        }
+        return "unknown";
+    }
+
+    struct HashBuilder64
+    {
+        std::uint64_t value = 1469598103934665603ull;
+
+        void addBytes(const void *data, std::size_t size)
+        {
+            const auto *bytes = static_cast<const std::uint8_t *>(data);
+            for (std::size_t i = 0; i < size; ++i)
+            {
+                value ^= static_cast<std::uint64_t>(bytes[i]);
+                value *= 1099511628211ull;
+            }
+        }
+
+        void addU8(std::uint8_t v) { addBytes(&v, sizeof(v)); }
+        void addU32(std::uint32_t v) { addBytes(&v, sizeof(v)); }
+        void addU64(std::uint64_t v) { addBytes(&v, sizeof(v)); }
+        void addI32(std::int32_t v) { addBytes(&v, sizeof(v)); }
+
+        void addBool(bool v)
+        {
+            addU8(v ? 1u : 0u);
+        }
+
+        void addFloat(float v)
+        {
+            std::uint32_t bits = 0;
+            static_assert(sizeof(bits) == sizeof(v));
+            std::memcpy(&bits, &v, sizeof(bits));
+            addU32(bits);
+        }
+
+        void addVec3(const Vec3 &v)
+        {
+            addFloat(v.x);
+            addFloat(v.y);
+            addFloat(v.z);
+        }
+
+        void addString(const std::string &s)
+        {
+            addU64(static_cast<std::uint64_t>(s.size()));
+            if (!s.empty())
+                addBytes(s.data(), s.size());
+        }
+    };
+
+    static void HashCameraForAccumulation(HashBuilder64 &hash,
+                                          const CameraDataCPU &cameraCPU)
+    {
+        hash.addVec3(cameraCPU.position);
+        hash.addVec3(cameraCPU.forward);
+        hash.addVec3(cameraCPU.up);
+        hash.addVec3(cameraCPU.right);
+        hash.addFloat(cameraCPU.fovY);
+        hash.addFloat(cameraCPU.nearPlane);
+        hash.addFloat(cameraCPU.farPlane);
+        hash.addFloat(cameraCPU.focusDistance);
+    }
+
+    static void HashLight(HashBuilder64 &hash,
+                          const Light &light)
+    {
+        hash.addI32(static_cast<std::int32_t>(light.type));
+        hash.addVec3(light.position);
+        hash.addVec3(light.direction);
+        hash.addVec3(light.color);
+        hash.addFloat(light.intensity);
+        hash.addFloat(light.radius);
+        hash.addFloat(light.attenuationRadius);
+        hash.addFloat(light.spotSize);
+        hash.addFloat(light.spotBlend);
+        hash.addI32(static_cast<std::int32_t>(light.areaShape));
+        hash.addFloat(light.areaSizeX);
+        hash.addFloat(light.areaSizeY);
+    }
+
+    static void HashMaterial(HashBuilder64 &hash,
+                             const SceneMetaMaterial &material)
+    {
+        hash.addVec3(material.baseColor);
+        hash.addVec3(material.emissionColor);
+        hash.addFloat(material.emissionStrength);
+        hash.addFloat(material.metallic);
+        hash.addFloat(material.roughness);
+        hash.addFloat(material.opacity);
+        hash.addI32(material.blendMode);
+        hash.addBool(material.twoSided);
+        hash.addFloat(material.decalTilingU);
+        hash.addFloat(material.decalTilingV);
+        hash.addFloat(material.decalOpacityPower);
+        hash.addFloat(material.decalNormalIntensity);
+        hash.addFloat(material.decalRoughnessBias);
+        hash.addI32(material.decalOpacityTexIndex);
+        hash.addBool(material.decalOpacityTexIsLinear);
+        hash.addI32(material.decalDetailTexIndex);
+        hash.addBool(material.decalDetailTexIsLinear);
+        hash.addI32(material.baseColorTexIndex);
+        hash.addI32(material.emissionTexIndex);
+        hash.addI32(material.normalTexIndex);
+        hash.addI32(material.ormTexIndex);
+        hash.addI32(material.roughnessTexIndex);
+        hash.addI32(material.metallicTexIndex);
+        hash.addI32(material.occlusionTexIndex);
+        hash.addU8(material.ormChannels.occlusion);
+        hash.addU8(material.ormChannels.roughness);
+        hash.addU8(material.ormChannels.metallic);
+    }
+
+    static void HashDecal(HashBuilder64 &hash,
+                          const SceneMetaDecal &decal)
+    {
+        hash.addVec3(decal.position);
+        hash.addVec3(decal.axisX);
+        hash.addVec3(decal.axisY);
+        hash.addVec3(decal.axisZ);
+        hash.addVec3(decal.size);
+        hash.addI32(decal.materialIndex);
+        hash.addI32(decal.sortOrder);
+        hash.addFloat(decal.fadeScreenSize);
+    }
+
+    static std::uint64_t ComputeAccumulationStateHash(const CameraDataCPU &cameraCPU,
+                                                      int width,
+                                                      int height,
+                                                      std::uint64_t sceneRevision,
+                                                      const std::vector<Light> &lights,
+                                                      const SceneMetaResources *metaRes,
+                                                      MetalAccumulationMode accumulationMode)
+    {
+        HashBuilder64 hash;
+        HashCameraForAccumulation(hash, cameraCPU);
+        hash.addU64(sceneRevision);
+        hash.addI32(width);
+        hash.addI32(height);
+        hash.addU32(kMetalShaderUvDebugMode);
+        hash.addU32(static_cast<std::uint32_t>(accumulationMode));
+
+        hash.addU64(static_cast<std::uint64_t>(lights.size()));
+        for (const Light &light : lights)
+            HashLight(hash, light);
+
+        const bool hasMetaRes = (metaRes != nullptr);
+        hash.addBool(hasMetaRes);
+        if (!hasMetaRes)
+            return hash.value;
+
+        hash.addU64(static_cast<std::uint64_t>(metaRes->baseColorTextures.size()));
+        for (const std::string &path : metaRes->baseColorTextures)
+            hash.addString(path);
+
+        hash.addU64(static_cast<std::uint64_t>(metaRes->linearTextures.size()));
+        for (const std::string &path : metaRes->linearTextures)
+            hash.addString(path);
+
+        hash.addU64(static_cast<std::uint64_t>(metaRes->materials.size()));
+        for (const SceneMetaMaterial &material : metaRes->materials)
+            HashMaterial(hash, material);
+
+        hash.addU64(static_cast<std::uint64_t>(metaRes->materialsPBR.size()));
+        for (const SceneMetaMaterial &material : metaRes->materialsPBR)
+            HashMaterial(hash, material);
+
+        hash.addU64(static_cast<std::uint64_t>(metaRes->decals.size()));
+        for (const SceneMetaDecal &decal : metaRes->decals)
+            HashDecal(hash, decal);
+
+        return hash.value;
+    }
+
+    static uint32_t EffectiveSamplesPerDispatch(const CameraDataCPU &cameraCPU)
+    {
+        if (kMetalShaderUvDebugMode != 0u)
+            return 0u;
+
+        return static_cast<uint32_t>(std::max(cameraCPU.samplesPerPixel, 1));
+    }
+
+    static void ResetMetalAccumulationState()
+    {
+        g_accumulatedSampleCount = 0;
+        g_accumulationDispatchCount = 0;
+        g_accumulationStateHash = kInvalidAccumulationHash;
+        g_accumTexture = nil;
+    }
+
     static void PrintTextureFrameProfile(const TextureFrameProfile &p)
     {
         auto &tot = g_textureProfileTotals;
@@ -356,7 +559,9 @@ namespace
 
         std::ostringstream oss;
         oss << "[MetalProfiler][Texture] call=" << p.callIndex
-            << " accum=" << p.accumulationFrame << "\n"
+            << " mode=" << AccumulationModeName(p.accumulationMode)
+            << " accumSamples=" << p.accumulatedSamples
+            << " batchSamples=" << p.samplesThisDispatch << "\n"
             << "  scene stats:\n";
         AppendCountLine(oss, "proto tris", p.prototypeTriangles);
         AppendCountLine(oss, "instances", p.totalInstances);
@@ -781,7 +986,7 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
     {
         if (g_loadedMetaRes != nullptr)
         {
-            ResetMetalAccumulation();
+            ResetMetalAccumulationState();
             g_loadedMetaRes = nullptr;
             g_cachedDecalMetaRes = nullptr;
             g_baseColorTextures.clear();
@@ -835,7 +1040,7 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         return true;
 
     // ИНАЧЕ: перезагружаем текстуры/материалы и сбрасываем accumulation (иначе будет "смесь" старых/новых)
-    ResetMetalAccumulation();
+    ResetMetalAccumulationState();
 
     g_baseColorTextures.clear();
     g_baseColorTexturePaths.clear();
@@ -1396,7 +1601,8 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
                                                    const CameraDataCPU &cameraCPU,
                                                    int width,
                                                    int height,
-                                                   uint32_t frameIndex)
+                                                   uint32_t previewDispatchCount,
+                                                   MetalAccumulationMode accumulationMode)
 {
     PostProcessParamsCPU pp{};
 
@@ -1473,7 +1679,9 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
 
     pp.nearPlane = std::max(1.0e-4f, cameraCPU.nearPlane);
     pp.farPlane  = std::max(pp.nearPlane + 1.0e-3f, cameraCPU.farPlane);
-    pp.time = static_cast<float>(frameIndex) * (1.0f / 60.0f);
+    pp.time = (accumulationMode == MetalAccumulationMode::FinalStill)
+            ? 0.0f
+            : static_cast<float>(previewDispatchCount) * (1.0f / 60.0f);
     pp.width = static_cast<float>(width);
     pp.height = static_cast<float>(height);
     pp._pad0 = 0.0f;
@@ -1482,8 +1690,7 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
 
 void ResetMetalAccumulation()
 {
-    g_frameIndex   = 0;
-    g_accumTexture = nil;
+    ResetMetalAccumulationState();
     g_textureProfileTotals = {};
     g_textureProfileCallIndex = 0;
 }
@@ -1763,6 +1970,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
                              const std::vector<SceneInstanceGPU> &instances,
                              const std::vector<Light>    &lights,
                              std::uint64_t                sceneRevision,
+                             MetalAccumulationMode        accumulationMode,
                              int                          rootIndex,
                              const CameraDataCPU         &cameraCPU,
                              const SceneMetaResources    *metaRes,
@@ -1770,7 +1978,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
 {
     TextureFrameProfile profile{};
     profile.callIndex = ++g_textureProfileCallIndex;
-    profile.accumulationFrame = g_frameIndex;
+    profile.accumulatedSamples = g_accumulatedSampleCount;
+    profile.samplesThisDispatch = EffectiveSamplesPerDispatch(cameraCPU);
+    profile.accumulationMode = accumulationMode;
     profile.prototypeTriangles = static_cast<uint32_t>(std::min<std::size_t>(tris.size(), UINT32_MAX));
     profile.totalInstances = static_cast<uint32_t>(std::min<std::size_t>(instances.size(), UINT32_MAX));
     profile.tlasNodeCount = static_cast<uint32_t>(std::min<std::size_t>(tlasNodes.size(), UINT32_MAX));
@@ -1802,6 +2012,20 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
 
     @autoreleasepool
     {
+        const std::uint64_t accumulationStateHash = ComputeAccumulationStateHash(cameraCPU,
+                                                                                 width,
+                                                                                 height,
+                                                                                 sceneRevision,
+                                                                                 lights,
+                                                                                 metaRes,
+                                                                                 accumulationMode);
+        if (g_accumulationStateHash != accumulationStateHash)
+        {
+            ResetMetalAccumulationState();
+            g_accumulationStateHash = accumulationStateHash;
+            profile.accumulatedSamples = 0;
+        }
+
         const auto accumStart = ProfileClock::now();
         if (!g_accumTexture ||
             g_accumTexture.width  != static_cast<NSUInteger>(width) ||
@@ -1811,8 +2035,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
                                                       width,
                                                       height,
                                                       MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-            g_frameIndex = 0;
-            profile.accumulationFrame = 0;
+            g_accumulatedSampleCount = 0;
+            g_accumulationDispatchCount = 0;
+            profile.accumulatedSamples = 0;
         }
         profile.accumTextureMs = ToMilliseconds(ProfileClock::now() - accumStart);
 
@@ -1836,7 +2061,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             return false;
         }
 
-        const uint32_t frameIndex = g_frameIndex;
+        const uint32_t sampleBaseIndex = g_accumulatedSampleCount;
 
         if (!g_materialPBRBuffer || !g_materialPBRCountBuffer)
         {
@@ -1854,7 +2079,12 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         if (!EnsureDecalBufferUploaded(metaRes, profile))
             return false;
 
-        PostProcessParamsCPU pp = BuildPostProcessParams(metaRes, cameraCPU, width, height, frameIndex);
+        PostProcessParamsCPU pp = BuildPostProcessParams(metaRes,
+                                                        cameraCPU,
+                                                        width,
+                                                        height,
+                                                        g_accumulationDispatchCount,
+                                                        accumulationMode);
         const std::array<uint32_t, 2> imageSize = {
             static_cast<uint32_t>(width),
             static_cast<uint32_t>(height)
@@ -1862,7 +2092,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         const auto smallStart = ProfileClock::now();
         if (!UploadSharedValue(g_device, g_camBuffer, cameraCPU) ||
             !UploadSharedValue(g_device, g_imgSizeBuffer, imageSize) ||
-            !UploadSharedValue(g_device, g_frameIndexBuffer, frameIndex) ||
+            !UploadSharedValue(g_device, g_sampleCountBuffer, sampleBaseIndex) ||
             !UploadSharedValue(g_device, g_postProcessBuffer, pp))
         {
             std::cerr << "Metal: не удалось обновить persistent small/frame buffers\n";
@@ -1906,7 +2136,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             [enc setBuffer:g_triCountBuffer            offset:0 atIndex:6];
             [enc setBuffer:g_lightBuffer               offset:0 atIndex:7];
             [enc setBuffer:g_lightCountBuffer          offset:0 atIndex:8];
-            [enc setBuffer:g_frameIndexBuffer          offset:0 atIndex:9];
+            [enc setBuffer:g_sampleCountBuffer         offset:0 atIndex:9];
             if (g_materialBuffer)
                 [enc setBuffer:g_materialBuffer offset:0 atIndex:10];
             if (g_materialCountBuffer)
@@ -1999,7 +2229,16 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
                         profile.blurVGpuMs +
                         profile.finalCompositeGpuMs;
 
-        g_frameIndex++;
+        if (profile.samplesThisDispatch > 0u)
+        {
+            const uint32_t remainingSamples = kAccumulatedSampleCountMax - g_accumulatedSampleCount;
+            g_accumulatedSampleCount += std::min(profile.samplesThisDispatch, remainingSamples);
+        }
+        if (accumulationMode == MetalAccumulationMode::PreviewProgressive &&
+            g_accumulationDispatchCount < std::numeric_limits<uint32_t>::max())
+        {
+            ++g_accumulationDispatchCount;
+        }
 
         const auto readbackStart = ProfileClock::now();
         MTLRegion region = MTLRegionMake2D(0, 0, width, height);

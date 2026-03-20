@@ -202,6 +202,8 @@ bool RenderManager::renderFrameTexture(Scene &scene,
 #ifdef USE_METAL_RENDERER
     if (auto *metal = dynamic_cast<MetalRenderer *>(renderer))
     {
+        const MetalAccumulationMode previousMode = metal->getAccumulationMode();
+        metal->setAccumulationMode(MetalAccumulationMode::FinalStill);
         for (int i = 0; i < N; ++i)
         {
             if (!metal->renderTexture(scene, camera, framebuffer))
@@ -213,6 +215,7 @@ bool RenderManager::renderFrameTexture(Scene &scene,
             const std::string outPath = outputPath + "_" + std::to_string(i) + ".png";
             SaveFrameBufferToPNG(framebuffer, w, h, outPath);
         }
+        metal->setAccumulationMode(previousMode);
         handled = true;
     }
 #endif
