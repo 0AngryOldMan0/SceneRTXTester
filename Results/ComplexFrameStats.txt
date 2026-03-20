@@ -442,3 +442,507 @@
     blur V                   0.521 ms  (   0.00%)
     final composite          0.585 ms  (   0.00%)
 
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials            11217.082 ms  (  37.99%)
+    accumTex                 0.016 ms  (   0.00%)
+    postTex                  0.037 ms  (   0.00%)
+    geom                    78.882 ms  (   0.27%)
+    small                    0.024 ms  (   0.00%)
+    lights                   0.024 ms  (   0.00%)
+    emissive+decal        1901.350 ms  (   6.44%)
+    postParams               0.008 ms  (   0.00%)
+    encode                   0.984 ms  (   0.00%)
+    wait                 16245.993 ms  (  55.02%)
+    readback                80.462 ms  (   0.27%)
+    gpu                  16059.576 ms  (  54.39%)
+    total                29524.871 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           16057.548 ms  (  99.99%)
+    bloom extract            0.396 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.522 ms  (   0.00%)
+    final composite          0.589 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             29524.871 ms  ( 100.00%)
+    avgWait              16245.993 ms  (  55.02%)
+    avgReadback             80.462 ms  (   0.27%)
+    avgGPU               16059.576 ms  (  54.39%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           16057.548 ms  (  99.99%)
+    bloom extract            0.396 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.522 ms  (   0.00%)
+    final composite          0.589 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.023 ms  (   0.00%)
+    accumTex                 0.094 ms  (   0.00%)
+    postTex                  0.086 ms  (   0.00%)
+    geom                    14.036 ms  (   0.06%)
+    small                    0.017 ms  (   0.00%)
+    lights                   0.009 ms  (   0.00%)
+    emissive+decal        1972.853 ms  (   8.86%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.212 ms  (   0.00%)
+    wait                 20185.307 ms  (  90.65%)
+    readback                95.742 ms  (   0.43%)
+    gpu                  20141.869 ms  (  90.45%)
+    total                22268.386 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           20139.853 ms  (  99.99%)
+    bloom extract            0.389 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.585 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             22268.386 ms  ( 100.00%)
+    avgWait              20185.307 ms  (  90.65%)
+    avgReadback             95.742 ms  (   0.43%)
+    avgGPU               20141.869 ms  (  90.45%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           20139.853 ms  (  99.99%)
+    bloom extract            0.389 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.585 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.020 ms  (   0.00%)
+    accumTex                 0.079 ms  (   0.00%)
+    postTex                  0.041 ms  (   0.00%)
+    geom                    14.453 ms  (   0.09%)
+    small                    0.025 ms  (   0.00%)
+    lights                   0.011 ms  (   0.00%)
+    emissive+decal        1921.520 ms  (  12.07%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.221 ms  (   0.00%)
+    wait                 13934.868 ms  (  87.51%)
+    readback                52.142 ms  (   0.33%)
+    gpu                  13894.711 ms  (  87.26%)
+    total                15923.386 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           13892.654 ms  (  99.99%)
+    bloom extract            0.400 ms  (   0.00%)
+    blur H                   0.524 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.611 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             15923.386 ms  ( 100.00%)
+    avgWait              13934.868 ms  (  87.51%)
+    avgReadback             52.142 ms  (   0.33%)
+    avgGPU               13894.711 ms  (  87.26%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           13892.654 ms  (  99.99%)
+    bloom extract            0.400 ms  (   0.00%)
+    blur H                   0.524 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.611 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.020 ms  (   0.00%)
+    accumTex                 0.094 ms  (   0.00%)
+    postTex                  0.055 ms  (   0.00%)
+    geom                    14.043 ms  (   0.08%)
+    small                    0.036 ms  (   0.00%)
+    lights                   0.009 ms  (   0.00%)
+    emissive+decal        1916.375 ms  (  11.23%)
+    postParams               0.002 ms  (   0.00%)
+    encode                   0.204 ms  (   0.00%)
+    wait                 15054.325 ms  (  88.22%)
+    readback                79.126 ms  (   0.46%)
+    gpu                  15012.922 ms  (  87.98%)
+    total                17064.295 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           15010.906 ms  (  99.99%)
+    bloom extract            0.389 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.584 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             17064.295 ms  ( 100.00%)
+    avgWait              15054.325 ms  (  88.22%)
+    avgReadback             79.126 ms  (   0.46%)
+    avgGPU               15012.922 ms  (  87.98%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           15010.906 ms  (  99.99%)
+    bloom extract            0.389 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.584 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.021 ms  (   0.00%)
+    accumTex                 0.064 ms  (   0.00%)
+    postTex                  0.046 ms  (   0.00%)
+    geom                    13.424 ms  (   0.10%)
+    small                    0.021 ms  (   0.00%)
+    lights                   0.011 ms  (   0.00%)
+    emissive+decal        1933.806 ms  (  13.75%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.176 ms  (   0.00%)
+    wait                 12039.200 ms  (  85.60%)
+    readback                77.509 ms  (   0.55%)
+    gpu                  11985.786 ms  (  85.22%)
+    total                14064.286 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           11983.764 ms  (  99.98%)
+    bloom extract            0.389 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.590 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             14064.286 ms  ( 100.00%)
+    avgWait              12039.200 ms  (  85.60%)
+    avgReadback             77.509 ms  (   0.55%)
+    avgGPU               11985.786 ms  (  85.22%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           11983.764 ms  (  99.98%)
+    bloom extract            0.389 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.590 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.020 ms  (   0.00%)
+    accumTex                 0.066 ms  (   0.00%)
+    postTex                  0.051 ms  (   0.00%)
+    geom                    14.002 ms  (   0.09%)
+    small                    0.028 ms  (   0.00%)
+    lights                   0.009 ms  (   0.00%)
+    emissive+decal        1968.976 ms  (  12.26%)
+    postParams               0.006 ms  (   0.00%)
+    encode                   0.233 ms  (   0.00%)
+    wait                 14026.337 ms  (  87.34%)
+    readback                50.049 ms  (   0.31%)
+    gpu                  13955.789 ms  (  86.90%)
+    total                16059.781 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           13953.766 ms  (  99.99%)
+    bloom extract            0.396 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.584 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             16059.781 ms  ( 100.00%)
+    avgWait              14026.337 ms  (  87.34%)
+    avgReadback             50.049 ms  (   0.31%)
+    avgGPU               13955.789 ms  (  86.90%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           13953.766 ms  (  99.99%)
+    bloom extract            0.396 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.584 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.020 ms  (   0.00%)
+    accumTex                 0.064 ms  (   0.00%)
+    postTex                  0.047 ms  (   0.00%)
+    geom                    13.458 ms  (   0.08%)
+    small                    0.026 ms  (   0.00%)
+    lights                   0.016 ms  (   0.00%)
+    emissive+decal        1939.718 ms  (  12.06%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.219 ms  (   0.00%)
+    wait                 14054.277 ms  (  87.36%)
+    readback                80.646 ms  (   0.50%)
+    gpu                  13985.279 ms  (  86.93%)
+    total                16088.499 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           13983.270 ms  (  99.99%)
+    bloom extract            0.382 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.585 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             16088.499 ms  ( 100.00%)
+    avgWait              14054.277 ms  (  87.36%)
+    avgReadback             80.646 ms  (   0.50%)
+    avgGPU               13985.279 ms  (  86.93%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           13983.270 ms  (  99.99%)
+    bloom extract            0.382 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.585 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.022 ms  (   0.00%)
+    accumTex                 0.075 ms  (   0.00%)
+    postTex                  0.050 ms  (   0.00%)
+    geom                    14.111 ms  (   0.08%)
+    small                    0.025 ms  (   0.00%)
+    lights                   0.010 ms  (   0.00%)
+    emissive+decal        1939.638 ms  (  10.69%)
+    postParams               0.007 ms  (   0.00%)
+    encode                   0.218 ms  (   0.00%)
+    wait                 16140.394 ms  (  88.95%)
+    readback                50.473 ms  (   0.28%)
+    gpu                  16066.933 ms  (  88.55%)
+    total                18145.025 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           16064.924 ms  (  99.99%)
+    bloom extract            0.387 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.522 ms  (   0.00%)
+    final composite          0.579 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             18145.025 ms  ( 100.00%)
+    avgWait              16140.394 ms  (  88.95%)
+    avgReadback             50.473 ms  (   0.28%)
+    avgGPU               16066.933 ms  (  88.55%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           16064.924 ms  (  99.99%)
+    bloom extract            0.387 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.522 ms  (   0.00%)
+    final composite          0.579 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.021 ms  (   0.00%)
+    accumTex                 0.073 ms  (   0.00%)
+    postTex                  0.057 ms  (   0.00%)
+    geom                    13.356 ms  (   0.09%)
+    small                    0.030 ms  (   0.00%)
+    lights                   0.028 ms  (   0.00%)
+    emissive+decal        1938.084 ms  (  12.90%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.265 ms  (   0.00%)
+    wait                 13001.552 ms  (  86.55%)
+    readback                68.653 ms  (   0.46%)
+    gpu                  12910.943 ms  (  85.95%)
+    total                15022.127 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           12908.934 ms  (  99.98%)
+    bloom extract            0.380 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.586 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             15022.127 ms  ( 100.00%)
+    avgWait              13001.552 ms  (  86.55%)
+    avgReadback             68.653 ms  (   0.46%)
+    avgGPU               12910.943 ms  (  85.95%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           12908.934 ms  (  99.98%)
+    bloom extract            0.380 ms  (   0.00%)
+    blur H                   0.522 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.586 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.023 ms  (   0.00%)
+    accumTex                 0.085 ms  (   0.00%)
+    postTex                  0.051 ms  (   0.00%)
+    geom                    20.002 ms  (   0.11%)
+    small                    0.027 ms  (   0.00%)
+    lights                   0.015 ms  (   0.00%)
+    emissive+decal        1945.838 ms  (  10.69%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.276 ms  (   0.00%)
+    wait                 16186.903 ms  (  88.91%)
+    readback                52.114 ms  (   0.29%)
+    gpu                  16113.296 ms  (  88.51%)
+    total                18205.341 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           16111.273 ms  (  99.99%)
+    bloom extract            0.386 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.522 ms  (   0.00%)
+    final composite          0.594 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             18205.341 ms  ( 100.00%)
+    avgWait              16186.903 ms  (  88.91%)
+    avgReadback             52.114 ms  (   0.29%)
+    avgGPU               16113.296 ms  (  88.51%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           16111.273 ms  (  99.99%)
+    bloom extract            0.386 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.522 ms  (   0.00%)
+    final composite          0.594 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.020 ms  (   0.00%)
+    accumTex                 0.082 ms  (   0.00%)
+    postTex                  0.049 ms  (   0.00%)
+    geom                    25.682 ms  (   0.13%)
+    small                    0.032 ms  (   0.00%)
+    lights                   0.034 ms  (   0.00%)
+    emissive+decal        1944.247 ms  (   9.51%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   2.385 ms  (   0.01%)
+    wait                 18420.799 ms  (  90.11%)
+    readback                50.285 ms  (   0.25%)
+    gpu                  18356.022 ms  (  89.79%)
+    total                20443.621 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           18353.993 ms  (  99.99%)
+    bloom extract            0.399 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.587 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             20443.621 ms  ( 100.00%)
+    avgWait              18420.799 ms  (  90.11%)
+    avgReadback             50.285 ms  (   0.25%)
+    avgGPU               18356.022 ms  (  89.79%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           18353.993 ms  (  99.99%)
+    bloom extract            0.399 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.587 ms  (   0.00%)
+
+[MetalProfiler][Texture] call=1 accum=0
+  scene stats:
+    proto tris              677440
+    instances                  338
+    TLAS nodes                 675
+    BLAS nodes             1354582
+  current:
+    init                     0.000 ms  (   0.00%)
+    materials                0.020 ms  (   0.00%)
+    accumTex                 0.073 ms  (   0.00%)
+    postTex                  0.041 ms  (   0.00%)
+    geom                    26.320 ms  (   0.11%)
+    small                    0.019 ms  (   0.00%)
+    lights                   0.012 ms  (   0.00%)
+    emissive+decal        1966.183 ms  (   7.93%)
+    postParams               0.003 ms  (   0.00%)
+    encode                   0.244 ms  (   0.00%)
+    wait                 22760.269 ms  (  91.75%)
+    readback                52.449 ms  (   0.21%)
+    gpu                  22688.366 ms  (  91.46%)
+    total                24805.636 ms  ( 100.00%)
+  gpu passes (current):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           22686.353 ms  (  99.99%)
+    bloom extract            0.388 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.583 ms  (   0.00%)
+    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.
+  average:
+    avgTotal             24805.636 ms  ( 100.00%)
+    avgWait              22760.269 ms  (  91.75%)
+    avgReadback             52.449 ms  (   0.21%)
+    avgGPU               22688.366 ms  (  91.46%)
+  gpu passes (average):
+    primary-depth            0.000 ms  (   0.00%)
+    path trace           22686.353 ms  (  99.99%)
+    bloom extract            0.388 ms  (   0.00%)
+    blur H                   0.521 ms  (   0.00%)
+    blur V                   0.521 ms  (   0.00%)
+    final composite          0.583 ms  (   0.00%)
+
