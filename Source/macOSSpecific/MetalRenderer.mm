@@ -73,6 +73,8 @@ namespace
     id<MTLTexture>              g_accumTexture    = nil;
     uint32_t                    g_frameIndex      = 0;
     id<MTLTexture>              g_hdrTexture      = nil;
+    id<MTLTexture>              g_albedoTexture   = nil;
+    id<MTLTexture>              g_normalTexture   = nil;
     id<MTLTexture>              g_bloomTextureA   = nil;
     id<MTLTexture>              g_bloomTextureB   = nil;
     id<MTLTexture>              g_outTexture      = nil;
@@ -80,7 +82,7 @@ namespace
     int                         g_postTextureHeight = 0;
 
     // --- НОВОЕ: ресурсы материалов/текстур ---
-    constexpr uint32_t          kMaxAllTextures = 126;
+    constexpr uint32_t          kMaxAllTextures = 124;
 
     id<MTLBuffer>               g_materialBuffer      = nil;
     id<MTLBuffer>               g_materialCountBuffer = nil;
@@ -798,10 +800,11 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
     // ------------------------------------------------------------
     // Важно:
     // В compute-пайплайне лимит texture-аргументов обычно 128.
-    // Уже заняты texture(0)=accum и texture(1)=hdr, а depth упакован в hdr.a, поэтому под сценовые текстуры остаётся 126 слотов.
+    // Уже заняты texture(0)=accum, texture(1)=hdr, texture(2)=albedo guide, texture(3)=normal guide,
+    // поэтому под сценовые текстуры остаётся 124 слота.
     // Чтобы не "резать" линейные PBR-текстуры (LevelMeta13+), пакуем их в ЕДИНЫЙ пул:
     //   [baseColor/emission (sRGB)] + [normal/orm/rough/metal/ao (linear)]
-    // и биндится всё подряд начиная с texture(2).
+    // и биндится всё подряд начиная с texture(4).
     //
     // Сейчас шейдер использует только baseColor/emission индексы (0..baseCount-1).
     // PBR-индексы готовятся в g_materialPBRBuffer для следующего шага (шейдер будет читать их позже).
@@ -816,7 +819,7 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
     }
 
     // Собираем комбинированный список путей, ограничивая общим лимитом texture slots.
-    const size_t baseCount  = std::min(baseFull.size(), (size_t)kMaxAllTextures); // kMaxAllTextures = 126 (см. выше)
+    const size_t baseCount  = std::min(baseFull.size(), (size_t)kMaxAllTextures); // kMaxAllTextures = 124 (см. выше)
     const size_t remaining  = (size_t)kMaxAllTextures - baseCount;
     const size_t linCount   = std::min(linFull.size(), remaining);
 
@@ -1148,6 +1151,8 @@ static bool EnsurePostProcessTextures(int width, int height)
 
     const bool sizeMatches =
         g_hdrTexture &&
+        g_albedoTexture &&
+        g_normalTexture &&
         g_bloomTextureA &&
         g_bloomTextureB &&
         g_outTexture &&
@@ -1160,6 +1165,14 @@ static bool EnsurePostProcessTextures(int width, int height)
                                             width,
                                             height,
                                             MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    g_albedoTexture = CreateRGBA32FloatTexture(g_device,
+                                               width,
+                                               height,
+                                               MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    g_normalTexture = CreateRGBA32FloatTexture(g_device,
+                                               width,
+                                               height,
+                                               MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
     g_bloomTextureA = CreateRGBA32FloatTexture(g_device,
                                                width,
                                                height,
@@ -1172,7 +1185,8 @@ static bool EnsurePostProcessTextures(int width, int height)
                                             width,
                                             height,
                                             MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-    if (!g_hdrTexture || !g_bloomTextureA || !g_bloomTextureB || !g_outTexture)
+    if (!g_hdrTexture || !g_albedoTexture || !g_normalTexture ||
+        !g_bloomTextureA || !g_bloomTextureB || !g_outTexture)
         return false;
 
     g_postTextureWidth = width;
@@ -1910,10 +1924,12 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
 
             [enc setTexture:g_accumTexture atIndex:0];
             [enc setTexture:g_hdrTexture   atIndex:1];
+            [enc setTexture:g_albedoTexture atIndex:2];
+            [enc setTexture:g_normalTexture atIndex:3];
 
             const uint32_t texCount = static_cast<uint32_t>(g_baseColorTextures.size());
             for (uint32_t i = 0; i < texCount; ++i)
-                [enc setTexture:g_baseColorTextures[i] atIndex:(NSUInteger)(2 + i)];
+                [enc setTexture:g_baseColorTextures[i] atIndex:(NSUInteger)(4 + i)];
 
             dispatchPass(g_pipelineTexture, enc);
             [enc endEncoding];

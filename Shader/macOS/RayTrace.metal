@@ -190,7 +190,7 @@ struct LightGPU
     float attenuationRadius;
 };
 
-constant uint MAX_BASE_TEX = 126; // unified scene texture pool (sRGB + linear), bound from texture(2)
+constant uint MAX_BASE_TEX = 124; // unified scene texture pool (sRGB + linear), bound from texture(4)
 
 struct MaterialGPU
 {
@@ -263,6 +263,16 @@ struct BSDFSample
     float3 direction;
     float3 weight;
     float  pdf;
+};
+
+struct PathTraceTextureResult
+{
+    float3 color;
+    float  depth;
+    float3 albedo;
+    float  hitMask;
+    float3 normal;
+    float  _pad0;
 };
 
 // ======================
@@ -2738,42 +2748,50 @@ inline float3 tracePathPixel(uint2                  gid,
     return pixelColor;
 }
 
-inline float3 tracePathPixelTextured(uint2                  gid,
-                             uint2                  imgSize,
-                             const device BVHNode  *tlasNodes,
-                             const device BVHNode  *meshNodes,
-                             const device Triangle *triangles,
-                             const device SceneInstanceGPU *instances,
-                             uint                   tlasNodeCount,
-                             uint                   meshNodeCount,
-                             uint                   instanceCount,
-                             int                    rootIndex,
-                             float3                 camPos,
-                             float3                 camForward,
-                             float3                 camUp,
-                             float3                 camRight,
-                             float                  fovY,
-                             int                    samplesPerPixel,
-                             const device LightGPU *lights,
-                             uint                   lightCount,
-                             uint                   frameIndex,
-                             const device MaterialGPU *materials,
-                             uint                    materialCount,
-                             const device MaterialGPU_PBR *materialsPBR,
-                             uint                    materialPBRCount,
-                             const device EmissiveTriangleGPU *emissiveTriangles,
-                             uint                    emissiveTriangleCount,
-                             const device DecalGPU   *decals,
-                             uint                    decalCount,
-                             const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
+inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
+                                                     uint2                  imgSize,
+                                                     const device BVHNode  *tlasNodes,
+                                                     const device BVHNode  *meshNodes,
+                                                     const device Triangle *triangles,
+                                                     const device SceneInstanceGPU *instances,
+                                                     uint                   tlasNodeCount,
+                                                     uint                   meshNodeCount,
+                                                     uint                   instanceCount,
+                                                     int                    rootIndex,
+                                                     float3                 camPos,
+                                                     float3                 camForward,
+                                                     float3                 camUp,
+                                                     float3                 camRight,
+                                                     float                  fovY,
+                                                     int                    samplesPerPixel,
+                                                     const device LightGPU *lights,
+                                                     uint                   lightCount,
+                                                     uint                   frameIndex,
+                                                     const device MaterialGPU *materials,
+                                                     uint                    materialCount,
+                                                     const device MaterialGPU_PBR *materialsPBR,
+                                                     uint                    materialPBRCount,
+                                                     const device EmissiveTriangleGPU *emissiveTriangles,
+                                                     uint                    emissiveTriangleCount,
+                                                     const device DecalGPU   *decals,
+                                                     uint                    decalCount,
+                                                     const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
 {
+    PathTraceTextureResult result;
+    result.color = float3(0.0f);
+    result.depth = 1.0e30f;
+    result.albedo = float3(0.0f);
+    result.hitMask = 0.0f;
+    result.normal = float3(0.0f);
+    result._pad0 = 0.0f;
+
     const int   MAX_BOUNCES = 4;
     const float EPSILON_POS = SHADOW_EPS;
 
     uint w = imgSize.x;
     uint h = imgSize.y;
     if (gid.x >= w || gid.y >= h)
-        return float3(0.0f);
+        return result;
 
     int spp = samplesPerPixel;
     if (spp <= 0) spp = 1;
@@ -2808,7 +2826,7 @@ inline float3 tracePathPixelTextured(uint2                  gid,
             jy = rand01(seedBase ^ 0x13579Bu) - 0.5f;
         }
 
-        float2 jitter = (UV_DEBUG_MODE != 0) ? float2(0.0f) : float2(jx, jy);
+        float2 jitter = (UV_DEBUG_MODE != 0 || s == 0) ? float2(0.0f) : float2(jx, jy);
         Ray ray = makePrimaryRayJittered(int(gid.x), int(gid.y), int(w), int(h), jitter,
                                          camPos, camForward, camUp, camRight, fovY);
 
@@ -2935,6 +2953,13 @@ inline float3 tracePathPixelTextured(uint2                  gid,
             {
                 applyProjectedDecalsPrimary(hitPos, Ng, Ns, baseColor, roughness,
                                            decals, decalCount, sceneTextures);
+                if (s == 0)
+                {
+                    result.depth = hit.t;
+                    result.albedo = max(baseColor, float3(0.0f));
+                    result.normal = normalize(Ns);
+                    result.hitMask = 1.0f;
+                }
             }
 
             if (UV_DEBUG_MODE != 0 && bounce == 0)
@@ -2945,22 +2970,22 @@ inline float3 tracePathPixelTextured(uint2                  gid,
                 float3 bits16 = float3(hasORMTex ? 1.0f : 0.0f, hasRoughnessTex ? 1.0f : 0.0f, hasMetallicTex ? 1.0f : 0.0f);
                 switch (UV_DEBUG_MODE)
                 {
-                    case 1: return checker;
+                    case 1: result.color = checker; return result;
                     case 2: baseColor = checker; emissive = float3(0.0f); emissivePreExposure = float3(0.0f); metallic = 0.0f; roughness = 0.5f; ao = 1.0f; break;
-                    case 3: return uvGradient(uvW);
-                    case 4: return hashColorFromInt(matId);
-                    case 5: return baseColor;
-                    case 6: return baseColorTexOnly;
-                    case 7: return float3(ao);
-                    case 8: return float3(roughness);
-                    case 9: return float3(metallic);
-                    case 10: return normalToRGB(Ng);
-                    case 11: return normalToRGB(Ns);
-                    case 12: { float d = clamp01(0.5f * length(Ns - Ng)); return float3(d); }
-                    case 13: return emissivePreExposure;
-                    case 14: return float3(ao, roughness, metallic);
-                    case 15: return bits15;
-                    case 16: return bits16;
+                    case 3: result.color = uvGradient(uvW); return result;
+                    case 4: result.color = hashColorFromInt(matId); return result;
+                    case 5: result.color = baseColor; return result;
+                    case 6: result.color = baseColorTexOnly; return result;
+                    case 7: result.color = float3(ao); return result;
+                    case 8: result.color = float3(roughness); return result;
+                    case 9: result.color = float3(metallic); return result;
+                    case 10: result.color = normalToRGB(Ng); return result;
+                    case 11: result.color = normalToRGB(Ns); return result;
+                    case 12: { float d = clamp01(0.5f * length(Ns - Ng)); result.color = float3(d); return result; }
+                    case 13: result.color = emissivePreExposure; return result;
+                    case 14: result.color = float3(ao, roughness, metallic); return result;
+                    case 15: result.color = bits15; return result;
+                    case 16: result.color = bits16; return result;
                     default: break;
                 }
             }
@@ -2970,6 +2995,13 @@ inline float3 tracePathPixelTextured(uint2                  gid,
             if (dot(Ng, ray.direction) > 0.0f) Ng = -Ng;
             if (dot(Ns, ray.direction) > 0.0f) Ns = -Ns;
             N = Ns;
+            if (bounce == 0 && s == 0)
+            {
+                result.depth = hit.t;
+                result.albedo = max(baseColor, float3(0.0f));
+                result.normal = normalize(N);
+                result.hitMask = 1.0f;
+            }
             float3 V = normalize(-ray.direction);
 
             uint lightSeed = seedBase ^ (0x9E3779B9u * (uint(bounce) + 1u));
@@ -3030,7 +3062,8 @@ inline float3 tracePathPixelTextured(uint2                  gid,
     }
 
     pixelColor /= float(spp);
-    return pixelColor;
+    result.color = pixelColor;
+    return result;
 }
 
 
@@ -3237,7 +3270,8 @@ inline float tracePrimaryDepth(uint2 gid,
 }
 
 // ==================================================
-// KERNEL 2: path tracing -> HDR accumulation (depth packed into hdr.a)
+// KERNEL 2: path tracing -> HDR accumulation + first-hit guides
+// depth remains packed into hdr.a; albedo/normal are written to dedicated guide textures
 // ==================================================
 kernel void RayTraceTextureKernel(
     const device BVHNode   *bvhNodes      [[buffer(0)]],
@@ -3252,6 +3286,8 @@ kernel void RayTraceTextureKernel(
     constant uint          *frameIndexPtr [[buffer(9)]],
     texture2d<float, access::read_write> accumTex [[texture(0)]],
     texture2d<float, access::write>      hdrTex   [[texture(1)]],
+    texture2d<float, access::write>      albedoTex [[texture(2)]],
+    texture2d<float, access::write>      normalTex [[texture(3)]],
     const device MaterialGPU         *materials                  [[buffer(10)]],
     constant uint                    *materialCountPtr           [[buffer(11)]],
     const device BVHNode             *meshNodes                  [[buffer(12)]],
@@ -3264,7 +3300,7 @@ kernel void RayTraceTextureKernel(
     constant uint                    *decalCountPtr              [[buffer(19)]],
     constant uint                    *meshNodeCountPtr           [[buffer(20)]],
     constant uint                    *instanceCountPtr           [[buffer(21)]],
-    array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures [[texture(2)]],
+    array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures [[texture(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     uint2 imgSize = *imageSizePtr;
@@ -3301,14 +3337,7 @@ kernel void RayTraceTextureKernel(
     uint emissiveTriangleCount = (emissiveTriangleCountPtr != nullptr) ? *emissiveTriangleCountPtr : 0u;
     uint decalCount = (decalCountPtr != nullptr) ? *decalCountPtr : 0u;
 
-    float depthValue = tracePrimaryDepth(gid, imgSize,
-                                         bvhNodes, meshNodes, triangles, instances,
-                                         nodeCount, meshNodeCount, instanceCount, rootIndex,
-                                         camPos, camForward, camUp, camRight,
-                                         cam.fovY,
-                                         1.0e30f);
-
-    float3 frameColor = tracePathPixelTextured(
+    PathTraceTextureResult pathResult = tracePathPixelTextured(
         gid, imgSize,
         bvhNodes, meshNodes, triangles, instances,
         nodeCount, meshNodeCount, instanceCount, rootIndex,
@@ -3326,8 +3355,12 @@ kernel void RayTraceTextureKernel(
         decals,
         decalCount,
         sceneTextures);
+    float3 frameColor = pathResult.color;
+    float depthValue = pathResult.depth;
 
     frameColor = min(frameColor, float3(32.0f));
+    albedoTex.write(float4(pathResult.albedo, pathResult.hitMask), gid);
+    normalTex.write(float4(pathResult.normal, pathResult.hitMask), gid);
 
     const uint stampNow = uint(UV_DEBUG_MODE) & 0xFFu;
     if (UV_DEBUG_MODE != 0)
