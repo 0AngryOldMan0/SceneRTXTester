@@ -9,8 +9,6 @@ SceneObject::SceneObject(const std::string &name_)
 {
 }
 
-// ---- Геттеры ----
-
 const std::string &SceneObject::getName() const
 {
     return name;
@@ -36,7 +34,6 @@ int SceneObject::getRootIndex() const
     return rootIndex;
 }
 
-// Вернуть имя материала треугольника или nullptr, если нет
 const std::string *SceneObject::getTriangleMaterialName(std::size_t triIndex) const
 {
     if (triIndex >= triangleMaterialIds_.size())
@@ -53,7 +50,6 @@ const std::string *SceneObject::getTriangleMaterialName(std::size_t triIndex) co
     return &materialNames_[idx];
 }
 
-// Зарегистрировать имя материала и вернуть его id
 int SceneObject::registerMaterialName(const std::string &matName)
 {
     if (matName.empty())
@@ -69,7 +65,35 @@ int SceneObject::registerMaterialName(const std::string &matName)
     return id;
 }
 
-// ---- Сеттеры / модификация ----
+const std::vector<SceneTransformMatrix> &SceneObject::getInstanceTransforms() const
+{
+    return instanceTransforms_;
+}
+
+std::vector<SceneTransformMatrix> &SceneObject::getInstanceTransformsMutable()
+{
+    return instanceTransforms_;
+}
+
+std::size_t SceneObject::getInstanceCount() const
+{
+    return instanceTransforms_.empty() ? 1u : instanceTransforms_.size();
+}
+
+bool SceneObject::hasInstances() const
+{
+    return !instanceTransforms_.empty();
+}
+
+const std::string &SceneObject::getMeshAssetId() const
+{
+    return meshAssetId_;
+}
+
+const std::string &SceneObject::getMeshSpace() const
+{
+    return meshSpace_;
+}
 
 void SceneObject::setName(const std::string &newName)
 {
@@ -126,7 +150,30 @@ void SceneObject::addBVHNode(const BVHNode &node)
     bvhNodes.push_back(node);
 }
 
-// ---- Вспомогательные методы ----
+void SceneObject::setInstanceTransforms(const std::vector<SceneTransformMatrix> &transforms)
+{
+    instanceTransforms_ = transforms;
+}
+
+void SceneObject::setInstanceTransforms(std::vector<SceneTransformMatrix> &&transforms)
+{
+    instanceTransforms_ = std::move(transforms);
+}
+
+void SceneObject::addInstanceTransform(const SceneTransformMatrix &transform)
+{
+    instanceTransforms_.push_back(transform);
+}
+
+void SceneObject::setMeshAssetId(const std::string &id)
+{
+    meshAssetId_ = id;
+}
+
+void SceneObject::setMeshSpace(const std::string &space)
+{
+    meshSpace_ = space;
+}
 
 bool SceneObject::isEmpty() const
 {
@@ -184,7 +231,6 @@ void SceneObject::applyMaterial(const Vec3 &baseColor,
     }
 }
 
-// AABB для всех треугольников
 void SceneObject::computeTriangleAABBs()
 {
     for (auto &tri : triangles)
@@ -212,4 +258,7 @@ void SceneObject::clear()
     materialNameToId_.clear();
     rootIndex = -1;
     baseColor_ = Vec3{1.0f, 1.0f, 1.0f};
+    meshAssetId_.clear();
+    meshSpace_.clear();
+    instanceTransforms_.clear();
 }

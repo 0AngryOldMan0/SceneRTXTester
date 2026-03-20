@@ -66,68 +66,6 @@ namespace
         return Vec3{v.x * invLen, v.y * invLen, v.z * invLen};
     }
 
-    static Vec3 TransformPoint(const std::array<float,16>& m, const Vec3& p)
-    {
-        return Vec3{
-            m[0] * p.x + m[1] * p.y + m[2]  * p.z + m[3],
-            m[4] * p.x + m[5] * p.y + m[6]  * p.z + m[7],
-            m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11]
-        };
-    }
-
-    static Vec3 TransformDirection(const std::array<float,16>& m, const Vec3& v)
-    {
-        return Vec3{
-            m[0] * v.x + m[1] * v.y + m[2]  * v.z,
-            m[4] * v.x + m[5] * v.y + m[6]  * v.z,
-            m[8] * v.x + m[9] * v.y + m[10] * v.z
-        };
-    }
-
-    static bool Invert3x3Transpose(const std::array<float,16>& m, float outIT[9])
-    {
-        const float a00 = m[0], a01 = m[1], a02 = m[2];
-        const float a10 = m[4], a11 = m[5], a12 = m[6];
-        const float a20 = m[8], a21 = m[9], a22 = m[10];
-
-        const float c00 =  a11 * a22 - a12 * a21;
-        const float c01 = -(a10 * a22 - a12 * a20);
-        const float c02 =  a10 * a21 - a11 * a20;
-
-        const float c10 = -(a01 * a22 - a02 * a21);
-        const float c11 =  a00 * a22 - a02 * a20;
-        const float c12 = -(a00 * a21 - a01 * a20);
-
-        const float c20 =  a01 * a12 - a02 * a11;
-        const float c21 = -(a00 * a12 - a02 * a10);
-        const float c22 =  a00 * a11 - a01 * a10;
-
-        const float det = a00 * c00 + a01 * c01 + a02 * c02;
-        if (!(std::abs(det) > 1e-20f) || !std::isfinite(det))
-            return false;
-
-        const float invDet = 1.0f / det;
-
-        // inverse-transpose = cofactors / det
-        outIT[0] = c00 * invDet; outIT[1] = c10 * invDet; outIT[2] = c20 * invDet;
-        outIT[3] = c01 * invDet; outIT[4] = c11 * invDet; outIT[5] = c21 * invDet;
-        outIT[6] = c02 * invDet; outIT[7] = c12 * invDet; outIT[8] = c22 * invDet;
-        return true;
-    }
-
-    static Vec3 TransformNormalInvTranspose(const std::array<float,16>& m, const Vec3& n)
-    {
-        float it[9];
-        if (!Invert3x3Transpose(m, it))
-            return NormalizeSafe(TransformDirection(m, n), Vec3{0.0f, 0.0f, 1.0f});
-
-        const Vec3 r{
-            it[0] * n.x + it[1] * n.y + it[2] * n.z,
-            it[3] * n.x + it[4] * n.y + it[5] * n.z,
-            it[6] * n.x + it[7] * n.y + it[8] * n.z
-        };
-        return NormalizeSafe(r, Vec3{0.0f, 0.0f, 1.0f});
-    }
     static void ComputeTriAABB(Triangle& t)
     {
         const float minX = std::min(t.v0.x, std::min(t.v1.x, t.v2.x));
@@ -294,6 +232,30 @@ std::string SceneJSONLoader::getName() const
     return "SceneRTX Scene JSON Loader";
 }
 
+static std::string BuildPrimitiveGroupKey(const std::string& meshAssetId,
+                                          const std::string& meshSpace,
+                                          const std::vector<SectionInfo>& sections)
+{
+    std::string key = meshAssetId;
+    key += "|";
+    key += meshSpace;
+    key += "|";
+
+    for (const SectionInfo& s : sections)
+    {
+        key += std::to_string(s.firstIndex);
+        key += ":";
+        key += std::to_string(s.indexCount);
+        key += ":";
+        key += std::to_string(s.materialIndex);
+        key += ":";
+        key += s.materialName;
+        key += ";";
+    }
+
+    return key;
+}
+
 std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
 {
     json root;
@@ -327,7 +289,6 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
     if (!binFile)
         throw std::runtime_error("Не удалось открыть meshes.bin: " + meshesPath.string());
 
-    // quick signature check
     {
         char magic[8] = {};
         binFile.read(magic, 8);
@@ -349,9 +310,9 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
             const std::string id = jm.value("stable_id", std::string{});
             const std::string name = jm.value("name", std::string{});
             if (!id.empty())
-                materialIndexById[id] = (int32_t)i;
+                materialIndexById[id] = static_cast<int32_t>(i);
             if (!name.empty())
-                materialIndexByName[name] = (int32_t)i;
+                materialIndexByName[name] = static_cast<int32_t>(i);
         }
     }
 
@@ -371,6 +332,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
     meshCache.reserve(meshAssetById.size());
 
     std::vector<SceneObject> objects;
+    std::unordered_map<std::string, std::size_t> objectIndexByGroupKey;
 
     auto itPrims = root.find("primitives");
     if (itPrims == root.end() || !itPrims->is_array())
@@ -406,13 +368,12 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
             continue;
 
         const std::vector<SectionInfo> sections = BuildPrimitiveSections(jp, mesh, materialIndexById, materialIndexByName);
-
         const std::string meshSpace = jp.value("mesh_space", std::string{});
 
-        std::vector<std::array<float,16>> instanceMatrices;
+        std::vector<SceneTransformMatrix> instanceMatrices;
         if (meshSpace == "scene_world_baked")
         {
-            instanceMatrices.push_back(std::array<float,16>{
+            instanceMatrices.push_back(SceneTransformMatrix{
                 1,0,0,0,
                 0,1,0,0,
                 0,0,1,0,
@@ -427,7 +388,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
         }
         else
         {
-            instanceMatrices.push_back(std::array<float,16>{
+            instanceMatrices.push_back(SceneTransformMatrix{
                 1,0,0,0,
                 0,1,0,0,
                 0,0,1,0,
@@ -439,17 +400,18 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
                                  jp.value("actor_path",
                                  jp.value("name", std::string("ScenePrimitive"))));
 
-        for (std::size_t instIdx = 0; instIdx < instanceMatrices.size(); ++instIdx)
-        {
-            SceneObject obj(instanceMatrices.size() > 1
-                ? (baseName + "_" + std::to_string(instIdx))
-                : baseName);
+        const std::string groupKey = BuildPrimitiveGroupKey(meshAssetId, meshSpace, sections);
+        auto itGroup = objectIndexByGroupKey.find(groupKey);
 
-            const auto& matrix = instanceMatrices[instIdx];
+        if (itGroup == objectIndexByGroupKey.end())
+        {
+            SceneObject obj(baseName);
+            obj.setMeshAssetId(meshAssetId);
+            obj.setMeshSpace(meshSpace);
 
             for (std::size_t ii = 0; ii + 2 < mesh.indices.size(); ii += 3)
             {
-                const uint32_t triFirstIndex = (uint32_t)ii;
+                const uint32_t triFirstIndex = static_cast<uint32_t>(ii);
                 const uint32_t i0 = mesh.indices[ii + 0];
                 const uint32_t i1 = mesh.indices[ii + 1];
                 const uint32_t i2 = mesh.indices[ii + 2];
@@ -458,10 +420,9 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
                     continue;
 
                 Triangle t{};
-
-                t.v0 = TransformPoint(matrix, mesh.positions[i0]);
-                t.v1 = TransformPoint(matrix, mesh.positions[i1]);
-                t.v2 = TransformPoint(matrix, mesh.positions[i2]);
+                t.v0 = mesh.positions[i0];
+                t.v1 = mesh.positions[i1];
+                t.v2 = mesh.positions[i2];
 
                 t.uv0 = (i0 < mesh.uv0.size()) ? mesh.uv0[i0] : Vec2{0.0f, 0.0f};
                 t.uv1 = (i1 < mesh.uv0.size()) ? mesh.uv0[i1] : Vec2{0.0f, 0.0f};
@@ -472,7 +433,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
                 if (i1 < mesh.normals.size()) { nrm.x += mesh.normals[i1].x; nrm.y += mesh.normals[i1].y; nrm.z += mesh.normals[i1].z; }
                 if (i2 < mesh.normals.size()) { nrm.x += mesh.normals[i2].x; nrm.y += mesh.normals[i2].y; nrm.z += mesh.normals[i2].z; }
 
-                nrm = TransformNormalInvTranspose(matrix, nrm);
+                nrm = NormalizeSafe(nrm, Vec3{0.0f, 0.0f, 1.0f});
                 if (!(std::abs(nrm.x) > 1e-8f || std::abs(nrm.y) > 1e-8f || std::abs(nrm.z) > 1e-8f))
                 {
                     const Vec3 e1{t.v1.x - t.v0.x, t.v1.y - t.v0.y, t.v1.z - t.v0.z};
@@ -504,7 +465,19 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
             }
 
             if (!obj.isEmpty())
+            {
+                for (const SceneTransformMatrix& m : instanceMatrices)
+                    obj.addInstanceTransform(m);
+
                 objects.push_back(std::move(obj));
+                objectIndexByGroupKey[groupKey] = objects.size() - 1;
+            }
+        }
+        else
+        {
+            SceneObject& obj = objects[itGroup->second];
+            for (const SceneTransformMatrix& m : instanceMatrices)
+                obj.addInstanceTransform(m);
         }
     }
 

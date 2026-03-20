@@ -23,7 +23,6 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
-#include <fstream>
 
 template <typename T, typename = void>
 struct has_member_linearTextures : std::false_type {};
@@ -107,12 +106,6 @@ namespace
         double waitMs = 0.0;
         double readbackMs = 0.0;
         double gpuMs = 0.0;
-        double primaryDepthGpuMs = 0.0;
-        double pathTraceGpuMs = 0.0;
-        double bloomExtractGpuMs = 0.0;
-        double blurHGpuMs = 0.0;
-        double blurVGpuMs = 0.0;
-        double finalCompositeGpuMs = 0.0;
         double totalMs = 0.0;
     };
 
@@ -145,12 +138,6 @@ namespace
         double waitMs = 0.0;
         double readbackMs = 0.0;
         double gpuMs = 0.0;
-        double primaryDepthGpuMs = 0.0;
-        double pathTraceGpuMs = 0.0;
-        double bloomExtractGpuMs = 0.0;
-        double blurHGpuMs = 0.0;
-        double blurVGpuMs = 0.0;
-        double finalCompositeGpuMs = 0.0;
         double totalMs = 0.0;
     };
 
@@ -193,42 +180,6 @@ namespace
         return 0.0;
     }
 
-    static void AppendProfileLine(std::ostringstream &oss,
-                                  const char *name,
-                                  double valueMs,
-                                  double totalMs,
-                                  bool showPercent = true)
-    {
-        oss << "    "
-            << std::left  << std::setw(18) << name
-            << std::right << std::setw(12) << std::fixed << std::setprecision(3) << valueMs
-            << " ms";
-
-        if (showPercent && totalMs > 0.0)
-        {
-            const double percent = (valueMs * 100.0) / totalMs;
-            oss << "  (" << std::setw(7) << std::fixed << std::setprecision(2) << percent << "%)";
-        }
-
-        oss << "\n";
-    }
-
-    static void AppendProfileText(const std::string &textBlock)
-    {
-        std::cout << textBlock;
-        try
-        {
-            const std::filesystem::path outDir = std::filesystem::path("Results");
-            std::filesystem::create_directories(outDir);
-            std::ofstream out(outDir / "ComplexFrameStats.txt", std::ios::out | std::ios::app);
-            if (out)
-                out << textBlock;
-        }
-        catch (...)
-        {
-        }
-    }
-
     static void PrintTextureFrameProfile(const TextureFrameProfile &p)
     {
         auto &tot = g_textureProfileTotals;
@@ -246,72 +197,34 @@ namespace
         tot.waitMs += p.waitMs;
         tot.readbackMs += p.readbackMs;
         tot.gpuMs += p.gpuMs;
-        tot.primaryDepthGpuMs += p.primaryDepthGpuMs;
-        tot.pathTraceGpuMs += p.pathTraceGpuMs;
-        tot.bloomExtractGpuMs += p.bloomExtractGpuMs;
-        tot.blurHGpuMs += p.blurHGpuMs;
-        tot.blurVGpuMs += p.blurVGpuMs;
-        tot.finalCompositeGpuMs += p.finalCompositeGpuMs;
         tot.totalMs += p.totalMs;
 
         const double inv = (tot.frameCount > 0) ? (1.0 / static_cast<double>(tot.frameCount)) : 0.0;
-        const double avgTotal = tot.totalMs * inv;
-        const double avgWait = tot.waitMs * inv;
-        const double avgReadback = tot.readbackMs * inv;
-        const double avgGPU = tot.gpuMs * inv;
-        const double avgPrimaryDepth = tot.primaryDepthGpuMs * inv;
-        const double avgPathTrace = tot.pathTraceGpuMs * inv;
-        const double avgBloomExtract = tot.bloomExtractGpuMs * inv;
-        const double avgBlurH = tot.blurHGpuMs * inv;
-        const double avgBlurV = tot.blurVGpuMs * inv;
-        const double avgFinalComposite = tot.finalCompositeGpuMs * inv;
 
         std::ostringstream oss;
-        oss << "[MetalProfiler][Texture] call=" << p.callIndex
-            << " accum=" << p.accumulationFrame << "\n"
-            << "  current:\n";
-
-        AppendProfileLine(oss, "init", p.initMetalMs, p.totalMs);
-        AppendProfileLine(oss, "materials", p.ensureMaterialsMs, p.totalMs);
-        AppendProfileLine(oss, "accumTex", p.accumTextureMs, p.totalMs);
-        AppendProfileLine(oss, "postTex", p.intermediateTexturesMs, p.totalMs);
-        AppendProfileLine(oss, "geom", p.geometryBuffersMs, p.totalMs);
-        AppendProfileLine(oss, "small", p.smallBuffersMs, p.totalMs);
-        AppendProfileLine(oss, "lights", p.lightUploadMs, p.totalMs);
-        AppendProfileLine(oss, "emissive+decal", p.emissiveDecalMs, p.totalMs);
-        AppendProfileLine(oss, "postParams", p.postParamsMs, p.totalMs);
-        AppendProfileLine(oss, "encode", p.encodeMs, p.totalMs);
-        AppendProfileLine(oss, "wait", p.waitMs, p.totalMs);
-        AppendProfileLine(oss, "readback", p.readbackMs, p.totalMs);
-        AppendProfileLine(oss, "gpu", p.gpuMs, p.totalMs);
-        AppendProfileLine(oss, "total", p.totalMs, p.totalMs);
-
-        oss << "  gpu passes (current):\n";
-        AppendProfileLine(oss, "primary-depth", p.primaryDepthGpuMs, p.gpuMs);
-        AppendProfileLine(oss, "path trace", p.pathTraceGpuMs, p.gpuMs);
-        AppendProfileLine(oss, "bloom extract", p.bloomExtractGpuMs, p.gpuMs);
-        AppendProfileLine(oss, "blur H", p.blurHGpuMs, p.gpuMs);
-        AppendProfileLine(oss, "blur V", p.blurVGpuMs, p.gpuMs);
-        AppendProfileLine(oss, "final composite", p.finalCompositeGpuMs, p.gpuMs);
-        if (p.primaryDepthGpuMs <= 0.0)
-            oss << "    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.\n";
-
-        oss << "  average:\n";
-        AppendProfileLine(oss, "avgTotal", avgTotal, avgTotal);
-        AppendProfileLine(oss, "avgWait", avgWait, avgTotal);
-        AppendProfileLine(oss, "avgReadback", avgReadback, avgTotal);
-        AppendProfileLine(oss, "avgGPU", avgGPU, avgTotal);
-
-        oss << "  gpu passes (average):\n";
-        AppendProfileLine(oss, "primary-depth", avgPrimaryDepth, avgGPU);
-        AppendProfileLine(oss, "path trace", avgPathTrace, avgGPU);
-        AppendProfileLine(oss, "bloom extract", avgBloomExtract, avgGPU);
-        AppendProfileLine(oss, "blur H", avgBlurH, avgGPU);
-        AppendProfileLine(oss, "blur V", avgBlurV, avgGPU);
-        AppendProfileLine(oss, "final composite", avgFinalComposite, avgGPU);
-        oss << std::endl;
-
-        AppendProfileText(oss.str());
+        oss << std::fixed << std::setprecision(3)
+            << "[MetalProfiler][Texture] call=" << p.callIndex
+            << " accum=" << p.accumulationFrame
+            << " | init=" << p.initMetalMs
+            << " ms materials=" << p.ensureMaterialsMs
+            << " ms accumTex=" << p.accumTextureMs
+            << " ms postTex=" << p.intermediateTexturesMs
+            << " ms geom=" << p.geometryBuffersMs
+            << " ms small=" << p.smallBuffersMs
+            << " ms lights=" << p.lightUploadMs
+            << " ms emissive+decal=" << p.emissiveDecalMs
+            << " ms postParams=" << p.postParamsMs
+            << " ms encode=" << p.encodeMs
+            << " ms wait=" << p.waitMs
+            << " ms readback=" << p.readbackMs
+            << " ms gpu=" << p.gpuMs
+            << " ms total=" << p.totalMs
+            << " ms | avgTotal=" << (tot.totalMs * inv)
+            << " ms avgWait=" << (tot.waitMs * inv)
+            << " ms avgReadback=" << (tot.readbackMs * inv)
+            << " ms avgGPU=" << (tot.gpuMs * inv)
+            << " ms";
+        std::cout << oss.str() << std::endl;
     }
 
     static void PrintBufferFrameProfile(const BufferFrameProfile &p)
@@ -328,32 +241,24 @@ namespace
         tot.totalMs += p.totalMs;
 
         const double inv = (tot.frameCount > 0) ? (1.0 / static_cast<double>(tot.frameCount)) : 0.0;
-        const double avgTotal = tot.totalMs * inv;
-        const double avgWait = tot.waitMs * inv;
-        const double avgReadback = tot.readbackMs * inv;
-        const double avgGPU = tot.gpuMs * inv;
 
         std::ostringstream oss;
-        oss << "[MetalProfiler][Buffer] call=" << p.callIndex << "\n"
-            << "  current:\n";
-
-        AppendProfileLine(oss, "geom", p.geometryBuffersMs, p.totalMs);
-        AppendProfileLine(oss, "fb", p.framebufferBufferMs, p.totalMs);
-        AppendProfileLine(oss, "lights", p.lightUploadMs, p.totalMs);
-        AppendProfileLine(oss, "encode", p.encodeMs, p.totalMs);
-        AppendProfileLine(oss, "wait", p.waitMs, p.totalMs);
-        AppendProfileLine(oss, "readback", p.readbackMs, p.totalMs);
-        AppendProfileLine(oss, "gpu", p.gpuMs, p.totalMs);
-        AppendProfileLine(oss, "total", p.totalMs, p.totalMs);
-
-        oss << "  average:\n";
-        AppendProfileLine(oss, "avgTotal", avgTotal, avgTotal);
-        AppendProfileLine(oss, "avgWait", avgWait, avgTotal);
-        AppendProfileLine(oss, "avgReadback", avgReadback, avgTotal);
-        AppendProfileLine(oss, "avgGPU", avgGPU, avgTotal);
-        oss << std::endl;
-
-        AppendProfileText(oss.str());
+        oss << std::fixed << std::setprecision(3)
+            << "[MetalProfiler][Buffer] call=" << p.callIndex
+            << " | geom=" << p.geometryBuffersMs
+            << " ms fb=" << p.framebufferBufferMs
+            << " ms lights=" << p.lightUploadMs
+            << " ms encode=" << p.encodeMs
+            << " ms wait=" << p.waitMs
+            << " ms readback=" << p.readbackMs
+            << " ms gpu=" << p.gpuMs
+            << " ms total=" << p.totalMs
+            << " ms | avgTotal=" << (tot.totalMs * inv)
+            << " ms avgWait=" << (tot.waitMs * inv)
+            << " ms avgReadback=" << (tot.readbackMs * inv)
+            << " ms avgGPU=" << (tot.gpuMs * inv)
+            << " ms";
+        std::cout << oss.str() << std::endl;
     }
 }
 
@@ -427,11 +332,12 @@ static_assert(sizeof(DecalGPU) == 128, "DecalGPU size must be 128 bytes");
 struct EmissiveTriangleGPUCPU
 {
     uint32_t triIndex;
+    uint32_t instanceIndex;
     float    area;
     float    selectionPdf;
     float    cdf;
 };
-static_assert(sizeof(EmissiveTriangleGPUCPU) == 16, "EmissiveTriangleGPUCPU size must be 16 bytes");
+static_assert(sizeof(EmissiveTriangleGPUCPU) == 20, "EmissiveTriangleGPUCPU size must be 20 bytes");
 
 struct PostProcessParamsCPU
 {
@@ -939,31 +845,60 @@ static inline float TriangleAreaCPU(const Triangle &t)
     const float crLenSq = crx * crx + cry * cry + crz * crz;
     return 0.5f * std::sqrt(std::max(0.0f, crLenSq));
 }
+static inline Vec3 TransformPointCPU(const float m[12], const Vec3 &p)
+{
+    return Vec3{
+        m[0] * p.x + m[1] * p.y + m[2]  * p.z + m[3],
+        m[4] * p.x + m[5] * p.y + m[6]  * p.z + m[7],
+        m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11]
+    };
+}
 
-static std::vector<EmissiveTriangleGPUCPU> BuildEmissiveTriangleTable(const std::vector<Triangle> &tris)
+
+static std::vector<EmissiveTriangleGPUCPU> BuildEmissiveTriangleTable(const std::vector<Triangle> &tris,
+                                                                  const std::vector<SceneInstanceGPU> &instances)
 {
     std::vector<EmissiveTriangleGPUCPU> out;
-    out.reserve(tris.size());
+    if (tris.empty() || instances.empty())
+        return out;
 
+    out.reserve(tris.size());
     double totalWeight = 0.0;
     std::vector<double> weights;
     weights.reserve(tris.size());
 
-    for (std::size_t i = 0; i < tris.size(); ++i)
+    for (std::size_t instIdx = 0; instIdx < instances.size(); ++instIdx)
     {
-        const Triangle &t = tris[i];
-        const float area = TriangleAreaCPU(t);
-        const float lum  = std::max(0.0f, LuminanceCPU(t.emission));
-        const double weight = static_cast<double>(area) * static_cast<double>(lum);
-        if (weight <= 1.0e-12)
-            continue;
+        const SceneInstanceGPU &inst = instances[instIdx];
+        for (std::size_t triIdx = 0; triIdx < tris.size(); ++triIdx)
+        {
+            const Triangle &t = tris[triIdx];
+            const float lum  = std::max(0.0f, LuminanceCPU(t.emission));
+            if (lum <= 1.0e-8f)
+                continue;
 
-        EmissiveTriangleGPUCPU e{};
-        e.triIndex = static_cast<uint32_t>(i);
-        e.area = std::max(area, 1.0e-8f);
-        out.push_back(e);
-        weights.push_back(weight);
-        totalWeight += weight;
+            const Vec3 w0 = TransformPointCPU(inst.objectToWorld, t.v0);
+            const Vec3 w1 = TransformPointCPU(inst.objectToWorld, t.v1);
+            const Vec3 w2 = TransformPointCPU(inst.objectToWorld, t.v2);
+
+            Triangle worldTri = t;
+            worldTri.v0 = w0;
+            worldTri.v1 = w1;
+            worldTri.v2 = w2;
+
+            const float area = TriangleAreaCPU(worldTri);
+            const double weight = static_cast<double>(area) * static_cast<double>(lum);
+            if (weight <= 1.0e-12)
+                continue;
+
+            EmissiveTriangleGPUCPU e{};
+            e.triIndex = static_cast<uint32_t>(triIdx);
+            e.instanceIndex = static_cast<uint32_t>(instIdx);
+            e.area = std::max(area, 1.0e-8f);
+            out.push_back(e);
+            weights.push_back(weight);
+            totalWeight += weight;
+        }
     }
 
     if (out.empty() || totalWeight <= 0.0)
@@ -1435,8 +1370,10 @@ bool RenderFrameMetal(const std::vector<BVHNode>  &nodes,
 }
 
 // ВАЖНО: добавили параметр metaRes, чтобы передать список материалов/текстур из SceneMetaLoader.
-bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
+bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
+                             const std::vector<BVHNode>   &meshNodes,
                              const std::vector<Triangle> &tris,
+                             const std::vector<SceneInstanceGPU> &instances,
                              const std::vector<Light>    &lights,
                              int                          rootIndex,
                              const CameraDataCPU         &cameraCPU,
@@ -1512,10 +1449,10 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
         profile.intermediateTexturesMs = ToMilliseconds(ProfileClock::now() - interTexStart);
 
         const auto geomStart = ProfileClock::now();
-        const std::size_t bvhSize = nodes.size() * sizeof(BVHNode);
+        const std::size_t tlasSize = tlasNodes.size() * sizeof(BVHNode);
         id<MTLBuffer> bvhBuffer =
-            [g_device newBufferWithBytes:nodes.data()
-                                  length:bvhSize
+            [g_device newBufferWithBytes:tlasNodes.data()
+                                  length:tlasSize
                                  options:MTLResourceStorageModeShared];
 
         const std::size_t triSize = tris.size() * sizeof(Triangle);
@@ -1524,15 +1461,30 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
                                   length:triSize
                                  options:MTLResourceStorageModeShared];
 
-        if (!bvhBuffer || !triBuffer)
+        const std::size_t meshNodeSize = meshNodes.size() * sizeof(BVHNode);
+        id<MTLBuffer> meshNodeBuffer =
+            [g_device newBufferWithBytes:meshNodes.data()
+                                  length:meshNodeSize
+                                 options:MTLResourceStorageModeShared];
+
+        SceneInstanceGPU dummyInstance{};
+        const std::size_t instanceSize = instances.size() * sizeof(SceneInstanceGPU);
+        id<MTLBuffer> instanceBuffer =
+            [g_device newBufferWithBytes:(instances.empty() ? &dummyInstance : instances.data())
+                                  length:(instances.empty() ? sizeof(SceneInstanceGPU) : instanceSize)
+                                 options:MTLResourceStorageModeShared];
+
+        if (!bvhBuffer || !triBuffer || !meshNodeBuffer || !instanceBuffer)
         {
             std::cerr << "Metal: не удалось создать буферы геометрии (texture)\n";
             return false;
         }
         profile.geometryBuffersMs = ToMilliseconds(ProfileClock::now() - geomStart);
 
-        uint32_t nodeCount = static_cast<uint32_t>(nodes.size());
+        uint32_t nodeCount = static_cast<uint32_t>(tlasNodes.size());
         uint32_t triCount  = static_cast<uint32_t>(tris.size());
+        uint32_t meshNodeCount = static_cast<uint32_t>(meshNodes.size());
+        uint32_t instanceCount = static_cast<uint32_t>(instances.size());
         uint32_t imageSize[2] = {
             static_cast<uint32_t>(width),
             static_cast<uint32_t>(height)
@@ -1561,6 +1513,16 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
 
         id<MTLBuffer> triCountBuffer =
             [g_device newBufferWithBytes:&triCount
+                                  length:sizeof(uint32_t)
+                                 options:MTLResourceStorageModeShared];
+
+        id<MTLBuffer> meshNodeCountBuffer =
+            [g_device newBufferWithBytes:&meshNodeCount
+                                  length:sizeof(uint32_t)
+                                 options:MTLResourceStorageModeShared];
+
+        id<MTLBuffer> instanceCountBuffer =
+            [g_device newBufferWithBytes:&instanceCount
                                   length:sizeof(uint32_t)
                                  options:MTLResourceStorageModeShared];
         profile.smallBuffersMs = ToMilliseconds(ProfileClock::now() - smallStart);
@@ -1606,7 +1568,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
         profile.lightUploadMs = ToMilliseconds(ProfileClock::now() - lightStart);
 
         const auto emissiveDecalStart = ProfileClock::now();
-        const std::vector<EmissiveTriangleGPUCPU> emissiveTrianglesCPU = BuildEmissiveTriangleTable(tris);
+        const std::vector<EmissiveTriangleGPUCPU> emissiveTrianglesCPU = BuildEmissiveTriangleTable(tris, instances);
         EmissiveTriangleGPUCPU dummyEmissive{};
         id<MTLBuffer> emissiveTriangleBuffer = [g_device newBufferWithBytes:(emissiveTrianglesCPU.empty() ? &dummyEmissive : emissiveTrianglesCPU.data())
                                                                      length:(emissiveTrianglesCPU.empty() ? sizeof(EmissiveTriangleGPUCPU)
@@ -1668,14 +1630,10 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
         };
 
         const auto encodeStart = ProfileClock::now();
-        id<MTLCommandBuffer> pathTraceCmd = [g_queue commandBuffer];
-        id<MTLCommandBuffer> bloomExtractCmd = [g_queue commandBuffer];
-        id<MTLCommandBuffer> blurHCmd = [g_queue commandBuffer];
-        id<MTLCommandBuffer> blurVCmd = [g_queue commandBuffer];
-        id<MTLCommandBuffer> finalCompositeCmd = [g_queue commandBuffer];
+        id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
 
         {
-            id<MTLComputeCommandEncoder> enc = [pathTraceCmd computeCommandEncoder];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineTexture];
             [enc setBuffer:bvhBuffer                   offset:0 atIndex:0];
             [enc setBuffer:triBuffer                   offset:0 atIndex:1];
@@ -1691,12 +1649,16 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
                 [enc setBuffer:g_materialBuffer offset:0 atIndex:10];
             if (g_materialCountBuffer)
                 [enc setBuffer:g_materialCountBuffer offset:0 atIndex:11];
+            [enc setBuffer:meshNodeBuffer              offset:0 atIndex:12];
+            [enc setBuffer:instanceBuffer              offset:0 atIndex:13];
             [enc setBuffer:g_materialPBRBuffer         offset:0 atIndex:14];
             [enc setBuffer:g_materialPBRCountBuffer    offset:0 atIndex:15];
             [enc setBuffer:emissiveTriangleBuffer      offset:0 atIndex:16];
             [enc setBuffer:emissiveTriangleCountBuffer offset:0 atIndex:17];
             [enc setBuffer:decalBuffer                 offset:0 atIndex:18];
             [enc setBuffer:decalCountBuffer            offset:0 atIndex:19];
+            [enc setBuffer:meshNodeCountBuffer         offset:0 atIndex:20];
+            [enc setBuffer:instanceCountBuffer         offset:0 atIndex:21];
 
             [enc setTexture:g_accumTexture atIndex:0];
             [enc setTexture:hdrTexture     atIndex:1];
@@ -1708,10 +1670,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
             dispatchPass(g_pipelineTexture, enc);
             [enc endEncoding];
         }
-        [pathTraceCmd commit];
 
         {
-            id<MTLComputeCommandEncoder> enc = [bloomExtractCmd computeCommandEncoder];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineBloomExtract];
             [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
             [enc setTexture:hdrTexture    atIndex:0];
@@ -1719,10 +1680,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
             dispatchPass(g_pipelineBloomExtract, enc);
             [enc endEncoding];
         }
-        [bloomExtractCmd commit];
 
         {
-            id<MTLComputeCommandEncoder> enc = [blurHCmd computeCommandEncoder];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineBloomBlurH];
             [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
             [enc setTexture:bloomTextureA atIndex:0];
@@ -1730,10 +1690,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
             dispatchPass(g_pipelineBloomBlurH, enc);
             [enc endEncoding];
         }
-        [blurHCmd commit];
 
         {
-            id<MTLComputeCommandEncoder> enc = [blurVCmd computeCommandEncoder];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineBloomBlurV];
             [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
             [enc setTexture:bloomTextureB atIndex:0];
@@ -1741,10 +1700,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
             dispatchPass(g_pipelineBloomBlurV, enc);
             [enc endEncoding];
         }
-        [blurVCmd commit];
 
         {
-            id<MTLComputeCommandEncoder> enc = [finalCompositeCmd computeCommandEncoder];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelinePostProcess];
             [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
             [enc setTexture:hdrTexture    atIndex:0];
@@ -1753,25 +1711,14 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &nodes,
             dispatchPass(g_pipelinePostProcess, enc);
             [enc endEncoding];
         }
-        [finalCompositeCmd commit];
+
+        [cmd commit];
         profile.encodeMs = ToMilliseconds(ProfileClock::now() - encodeStart);
 
         const auto waitStart = ProfileClock::now();
-        [finalCompositeCmd waitUntilCompleted];
+        [cmd waitUntilCompleted];
         profile.waitMs = ToMilliseconds(ProfileClock::now() - waitStart);
-
-        profile.primaryDepthGpuMs = 0.0;
-        profile.pathTraceGpuMs = SafeGpuTimeMs(pathTraceCmd);
-        profile.bloomExtractGpuMs = SafeGpuTimeMs(bloomExtractCmd);
-        profile.blurHGpuMs = SafeGpuTimeMs(blurHCmd);
-        profile.blurVGpuMs = SafeGpuTimeMs(blurVCmd);
-        profile.finalCompositeGpuMs = SafeGpuTimeMs(finalCompositeCmd);
-        profile.gpuMs = profile.primaryDepthGpuMs +
-                        profile.pathTraceGpuMs +
-                        profile.bloomExtractGpuMs +
-                        profile.blurHGpuMs +
-                        profile.blurVGpuMs +
-                        profile.finalCompositeGpuMs;
+        profile.gpuMs = SafeGpuTimeMs(cmd);
 
         g_frameIndex++;
 

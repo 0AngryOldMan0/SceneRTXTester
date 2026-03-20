@@ -111,6 +111,18 @@ struct BVHNode
     int  tri;   // 4  -> всего 40 байт
 };
 
+struct SceneInstanceGPU
+{
+    float objectToWorld[12];
+    float worldToObject[12];
+    float normalToWorld[12];
+    AABB  worldBounds;
+    int   blasRootIndex;
+    int   _pad0;
+    int   _pad1;
+    int   _pad2;
+};
+
 struct CameraData
 {
     packed_float3 position;        //  0
@@ -139,6 +151,7 @@ struct HitInfo
 {
     bool   hit;
     int    triIndex;
+    int    instanceIndex;
     int    materialIndex;
     float  t;
     float3 position;
@@ -226,6 +239,7 @@ struct DecalGPU
 struct EmissiveTriangleGPU
 {
     uint  triIndex;
+    uint  instanceIndex;
     float area;
     float selectionPdf;
     float cdf;
@@ -235,6 +249,7 @@ struct EmissiveLightSample
 {
     uint   valid;
     uint   triIndex;
+    uint   instanceIndex;
     float  area;
     float  selectionPdf;
     float3 position;
@@ -314,6 +329,59 @@ inline void buildOrthonormalBasis(float3 n,
     bitangent = cross(N, tangent);
 }
 
+inline float3 transformPoint3x4(const float m[12], float3 p)
+{
+    return float3(m[0] * p.x + m[1] * p.y + m[2]  * p.z + m[3],
+                  m[4] * p.x + m[5] * p.y + m[6]  * p.z + m[7],
+                  m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11]);
+}
+
+inline float3 transformDirection3x4(const float m[12], float3 v)
+{
+    return float3(m[0] * v.x + m[1] * v.y + m[2]  * v.z,
+                  m[4] * v.x + m[5] * v.y + m[6]  * v.z,
+                  m[8] * v.x + m[9] * v.y + m[10] * v.z);
+}
+
+inline float3 transformPoint3x4(const device float *m, float3 p)
+{
+    return float3(m[0] * p.x + m[1] * p.y + m[2]  * p.z + m[3],
+                  m[4] * p.x + m[5] * p.y + m[6]  * p.z + m[7],
+                  m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11]);
+}
+
+inline float3 transformDirection3x4(const device float *m, float3 v)
+{
+    return float3(m[0] * v.x + m[1] * v.y + m[2]  * v.z,
+                  m[4] * v.x + m[5] * v.y + m[6]  * v.z,
+                  m[8] * v.x + m[9] * v.y + m[10] * v.z);
+}
+
+inline float3 transformPointObjectToWorld(const device SceneInstanceGPU &inst, float3 p)
+{
+    return transformPoint3x4(inst.objectToWorld, p);
+}
+
+inline float3 transformPointWorldToObject(const device SceneInstanceGPU &inst, float3 p)
+{
+    return transformPoint3x4(inst.worldToObject, p);
+}
+
+inline float3 transformDirectionObjectToWorld(const device SceneInstanceGPU &inst, float3 v)
+{
+    return transformDirection3x4(inst.objectToWorld, v);
+}
+
+inline float3 transformDirectionWorldToObject(const device SceneInstanceGPU &inst, float3 v)
+{
+    return transformDirection3x4(inst.worldToObject, v);
+}
+
+inline float3 transformNormalObjectToWorld(const device SceneInstanceGPU &inst, float3 n)
+{
+    return transformDirection3x4(inst.normalToWorld, n);
+}
+
 // ======================
 // Tangent basis + PBR texture sampling helpers
 // ======================
@@ -365,10 +433,32 @@ inline void computeTangentBasis(const device Triangle* triangles,
     B = safeNormalize(cross(N, T) * handedness);
 }
 
-inline float3 sampleNormalMap(int normalTexIndex,
+inline void computeTangentBasisInstanced(const device Triangle* triangles,
+                                         const device SceneInstanceGPU* instances,
+                                         int instanceIndex,
+                                         int triIndex,
+                                         float3 N,
+                                         thread float3& T,
+                                         thread float3& B)
+{
+    float3 localN = safeNormalize(float3(triangles[triIndex].normal));
+    computeTangentBasis(triangles, triIndex, localN, T, B);
+    if (instances != nullptr && instanceIndex >= 0)
+    {
+        const device SceneInstanceGPU &inst = instances[instanceIndex];
+        T = safeNormalize(transformDirectionObjectToWorld(inst, T));
+        T = safeNormalize(T - N * dot(N, T));
+        float handedness = (dot(cross(N, T), B) < 0.0f) ? -1.0f : 1.0f;
+        B = safeNormalize(cross(N, T) * handedness);
+    }
+}
+
+inline float3 sampleNormalMapInstanced(int normalTexIndex,
                               float2 uv,
                               float3 Ng,
                               const device Triangle* triangles,
+                              const device SceneInstanceGPU* instances,
+                              int instanceIndex,
                               int triIndex,
                               const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
 {
@@ -379,12 +469,10 @@ inline float3 sampleNormalMap(int normalTexIndex,
 
     float3 nTex = sceneTextures[uint(normalTexIndex)].sample(g_texSampler, uvW).xyz * 2.0f - 1.0f;
     if (NORMALMAP_FLIP_Y) nTex.y = -nTex.y;
-
-    // If texture is malformed, avoid NaNs
     nTex = safeNormalize(nTex);
 
     float3 T, B;
-    computeTangentBasis(triangles, triIndex, Ng, T, B);
+    computeTangentBasisInstanced(triangles, instances, instanceIndex, triIndex, Ng, T, B);
 
     float3 Ns = safeNormalize(nTex.x * T + nTex.y * B + nTex.z * Ng);
     return Ns;
@@ -746,6 +834,7 @@ inline HitInfo traceRayBVH(const device BVHNode   *nodes,
     HitInfo result;
     result.hit           = false;
     result.triIndex      = -1;
+    result.instanceIndex = -1;
     result.materialIndex = -1;
     result.t             = INFINITY;
     result.position      = float3(0.0f);
@@ -1139,6 +1228,158 @@ inline bool traceShadowBVH(const device BVHNode   *nodes,
 
     return false;
 }
+inline HitInfo traceRaySceneBVH(const device BVHNode *tlasNodes,
+                                 const device BVHNode *meshNodes,
+                                 const device Triangle *tris,
+                                 const device SceneInstanceGPU *instances,
+                                 uint tlasNodeCount,
+                                 uint meshNodeCount,
+                                 uint instanceCount,
+                                 int tlasRootIndex,
+                                 const Ray worldRay)
+{
+    HitInfo result;
+    result.hit = false;
+    result.triIndex = -1;
+    result.instanceIndex = -1;
+    result.materialIndex = -1;
+    result.t = INFINITY;
+    result.position = float3(0.0f);
+    result.normal = float3(0.0f, 0.0f, 1.0f);
+    result.color = float3(1.0f);
+    result.emission = float3(0.0f);
+    result.metallic = 0.0f;
+    result.roughness = 0.5f;
+    result.uv = float2(0.0f);
+
+    if (instances == nullptr || instanceCount == 0u)
+        return result;
+
+    const float3 o = worldRay.origin;
+    const float3 d = worldRay.direction;
+    const float3 invD = 1.0f / d;
+
+    struct StackEntry { int index; float tEnter; };
+    const int MAX_STACK = 96;
+    StackEntry stack[MAX_STACK];
+    int sp = 0;
+
+    float tEnterRoot = 0.0f;
+    if (!intersectAABBWithRayFast(tlasNodes[tlasRootIndex].box, o, d, invD, INFINITY, &tEnterRoot))
+        return result;
+
+    int nodeIndex = tlasRootIndex;
+    float bestT = INFINITY;
+    int deferredIndex = -1;
+    float deferredEnter = 0.0f;
+
+    while (true)
+    {
+        if (nodeIndex < 0 || nodeIndex >= int(tlasNodeCount))
+        {
+            bool found = false;
+            while (sp > 0)
+            {
+                StackEntry e = stack[--sp];
+                if (e.tEnter <= bestT) { nodeIndex = e.index; found = true; break; }
+            }
+            if (!found && deferredIndex != -1 && deferredEnter <= bestT)
+            { nodeIndex = deferredIndex; deferredIndex = -1; found = true; }
+            if (!found) break;
+            continue;
+        }
+
+        const device BVHNode &node = tlasNodes[nodeIndex];
+        if (node.tri >= 0)
+        {
+            const int instIndex = node.tri;
+            if (instIndex >= 0 && uint(instIndex) < instanceCount)
+            {
+                const device SceneInstanceGPU &inst = instances[instIndex];
+                Ray localRay;
+                localRay.origin = transformPointWorldToObject(inst, worldRay.origin);
+                localRay.direction = transformDirectionWorldToObject(inst, worldRay.direction);
+                HitInfo localHit = traceRayBVH(meshNodes, tris, meshNodeCount, inst.blasRootIndex, localRay);
+                if (localHit.hit)
+                {
+                    float3 worldPos = transformPointObjectToWorld(inst, localHit.position);
+                    float worldT = length(worldPos - worldRay.origin);
+                    if (worldT < bestT)
+                    {
+                        bestT = worldT;
+                        result = localHit;
+                        result.hit = true;
+                        result.instanceIndex = instIndex;
+                        result.t = worldT;
+                        result.position = worldPos;
+                        result.normal = normalize(transformNormalObjectToWorld(inst, localHit.normal));
+                    }
+                }
+            }
+
+            bool found = false;
+            while (sp > 0)
+            {
+                StackEntry e = stack[--sp];
+                if (e.tEnter <= bestT) { nodeIndex = e.index; found = true; break; }
+            }
+            if (!found && deferredIndex != -1 && deferredEnter <= bestT)
+            { nodeIndex = deferredIndex; deferredIndex = -1; found = true; }
+            if (!found) break;
+            continue;
+        }
+
+        int left = node.left;
+        int right = node.right;
+        bool hitL = false, hitR = false;
+        float tL = 0.0f, tR = 0.0f;
+        if (left >= 0) hitL = intersectAABBWithRayFast(tlasNodes[left].box, o, d, invD, bestT, &tL);
+        if (right >= 0) hitR = intersectAABBWithRayFast(tlasNodes[right].box, o, d, invD, bestT, &tR);
+
+        if (hitL && hitR)
+        {
+            int nearIdx, farIdx; float nearT, farT;
+            if (tL < tR) { nearIdx = left; nearT = tL; farIdx = right; farT = tR; }
+            else { nearIdx = right; nearT = tR; farIdx = left; farT = tL; }
+            if (sp < MAX_STACK) stack[sp++] = StackEntry{farIdx, farT};
+            else { deferredIndex = farIdx; deferredEnter = farT; }
+            nodeIndex = nearIdx;
+            continue;
+        }
+        else if (hitL) { nodeIndex = left; continue; }
+        else if (hitR) { nodeIndex = right; continue; }
+        else
+        {
+            bool found = false;
+            while (sp > 0)
+            {
+                StackEntry e = stack[--sp];
+                if (e.tEnter <= bestT) { nodeIndex = e.index; found = true; break; }
+            }
+            if (!found && deferredIndex != -1 && deferredEnter <= bestT)
+            { nodeIndex = deferredIndex; deferredIndex = -1; found = true; }
+            if (!found) break;
+        }
+    }
+
+    return result;
+}
+
+inline bool traceShadowSceneBVH(const device BVHNode *tlasNodes,
+                                const device BVHNode *meshNodes,
+                                const device Triangle *tris,
+                                const device SceneInstanceGPU *instances,
+                                uint tlasNodeCount,
+                                uint meshNodeCount,
+                                uint instanceCount,
+                                int tlasRootIndex,
+                                const Ray worldRay,
+                                float maxDist)
+{
+    HitInfo hit = traceRaySceneBVH(tlasNodes, meshNodes, tris, instances, tlasNodeCount, meshNodeCount, instanceCount, tlasRootIndex, worldRay);
+    return hit.hit && hit.t > 1.0e-4f && hit.t < maxDist;
+}
+
 inline bool isShadowed(const device BVHNode  *bvhNodes,
                        const device Triangle *triangles,
                        uint                   nodeCount,
@@ -1236,6 +1477,7 @@ inline bool findEmissiveEntry(uint triIndex,
 }
 
 inline EmissiveLightSample sampleOneEmissiveTriangle(const device Triangle *triangles,
+                                                     const device SceneInstanceGPU *instances,
                                                      const device EmissiveTriangleGPU *emissiveTriangles,
                                                      uint emissiveTriangleCount,
                                                      uint seedSelect,
@@ -1268,14 +1510,41 @@ inline EmissiveLightSample sampleOneEmissiveTriangle(const device Triangle *tria
     float b1 = r2 * su;
     float b2 = 1.0f - b0 - b1;
 
+    float3 pos = float3(tri.v0) * b0 + float3(tri.v1) * b1 + float3(tri.v2) * b2;
+    float3 nrm = triangleFaceNormal(tri);
+
+    if (instances != nullptr)
+    {
+        const device SceneInstanceGPU &inst = instances[e.instanceIndex];
+        pos = transformPointObjectToWorld(inst, pos);
+        nrm = normalize(transformNormalObjectToWorld(inst, nrm));
+    }
+
     s.valid = 1u;
     s.triIndex = e.triIndex;
+    s.instanceIndex = e.instanceIndex;
     s.area = max(e.area, 1e-8f);
     s.selectionPdf = max(e.selectionPdf, 1e-8f);
-    s.position = float3(tri.v0) * b0 + float3(tri.v1) * b1 + float3(tri.v2) * b2;
-    s.normal = triangleFaceNormal(tri);
+    s.position = pos;
+    s.normal = nrm;
     s.uv = triangleSampleUV(tri, b0, b1, b2);
     return s;
+}
+
+inline EmissiveLightSample sampleOneEmissiveTriangle(const device Triangle *triangles,
+                                                     const device EmissiveTriangleGPU *emissiveTriangles,
+                                                     uint emissiveTriangleCount,
+                                                     uint seedSelect,
+                                                     uint seedBaryU,
+                                                     uint seedBaryV)
+{
+    return sampleOneEmissiveTriangle(triangles,
+                                     nullptr,
+                                     emissiveTriangles,
+                                     emissiveTriangleCount,
+                                     seedSelect,
+                                     seedBaryU,
+                                     seedBaryV);
 }
 
 inline float emissiveLightPdfForHit(float3 prevSurfacePos,
@@ -1702,14 +1971,8 @@ inline float3 computeLightingAtPoint(
             L         = -ld;
             hasFinite = false;
         }
-        else if (type == LIGHT_TYPE_POINT ||
-                 type == LIGHT_TYPE_SPOT  ||
-                 type == LIGHT_TYPE_AREA)
+        else
         {
-            // Point lights are handled explicitly here.
-            // Earlier they fell through the generic finite-light path,
-            // which worked functionally but left LIGHT_TYPE_POINT unused
-            // and hid enum mismatches during debugging.
             float3 toLightCenter = lp - hitPos;
 
             if (radius > 0.0f)
@@ -1746,10 +2009,6 @@ inline float3 computeLightingAtPoint(
                     continue;
                 L = toLightCenter / dist;
             }
-        }
-        else
-        {
-            continue;
         }
 
         float NdL = dot(N, L);
@@ -1846,6 +2105,319 @@ inline float3 computeLightingAtPoint(
         float maxDist = hasFinite ? (dist - SHADOW_EPS) : -1.0f;
         if (isShadowed(bvhNodes, triangles, nodeCount, rootIndex,
                        shadowOrigin, L, maxDist))
+        {
+            continue;
+        }
+
+        float3 lightColor = float3(light.color) * intensity;
+
+        float3 H    = normalize(L + V);
+        float  NdH  = max(dot(N, H), 0.0f);
+        float  HdV  = max(dot(V, H), 0.0f);
+        NdL        = max(NdL, 0.0f);
+
+        if (NdL <= 0.0f || NdH <= 0.0f || NdV <= 0.0f)
+            continue;
+
+        float3 F = fresnelSchlick(HdV, F0);
+        float  D = distributionGGX(NdH, alpha);
+        float  G = geometrySmith(NdV, NdL, k);
+
+        float3 numerator = D * G * F;
+        float  denom     = max(4.0f * NdV * NdL, 1e-4f);
+        float3 spec      = numerator / denom;
+
+        float3 kd      = (float3(1.0f) - F) * (1.0f - metallic);
+        float3 diffuse = kd * baseColor * INV_PI;
+
+        float3 brdf = diffuse + spec;
+
+        result += lightColor * brdf * NdL;
+    }
+
+    return result;
+}
+
+
+inline float3 sampleDirectEmissiveLightingTexturedInstanced(float3 hitPos,
+                                                   float3 N,
+                                                   float3 Ng,
+                                                   float3 V,
+                                                   uint hitTriIndex,
+                                                   uint hitInstanceIndex,
+                                                   float3 baseColor,
+                                                   float metallic,
+                                                   float roughness,
+                                                   const device BVHNode *tlasNodes,
+                                                   const device BVHNode *meshNodes,
+                                                   const device Triangle *triangles,
+                                                   const device SceneInstanceGPU *instances,
+                                                   uint tlasNodeCount,
+                                                   uint meshNodeCount,
+                                                   uint instanceCount,
+                                                   int rootIndex,
+                                                   const device MaterialGPU *materials,
+                                                   uint materialCount,
+                                                   const device MaterialGPU_PBR *materialsPBR,
+                                                   uint materialPBRCount,
+                                                   const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures,
+                                                   const device EmissiveTriangleGPU *emissiveTriangles,
+                                                   uint emissiveTriangleCount,
+                                                   uint seedSelect,
+                                                   uint seedBaryU,
+                                                   uint seedBaryV)
+{
+    if (emissiveTriangles == nullptr || emissiveTriangleCount == 0u)
+        return float3(0.0f);
+
+    EmissiveLightSample ls = sampleOneEmissiveTriangle(triangles, instances, emissiveTriangles, emissiveTriangleCount,
+                                                       seedSelect, seedBaryU, seedBaryV);
+    if (ls.valid == 0u)
+        return float3(0.0f);
+    if (ls.triIndex == hitTriIndex && ls.instanceIndex == hitInstanceIndex)
+        return float3(0.0f);
+
+    float3 toLight = ls.position - hitPos;
+    float dist2 = dot(toLight, toLight);
+    if (dist2 <= 1e-10f)
+        return float3(0.0f);
+
+    float dist = sqrt(dist2);
+    float3 L = toLight / dist;
+    float NdL = max(dot(N, L), 0.0f);
+    if (NdL <= 0.0f)
+        return float3(0.0f);
+
+    float cosLight = fabs(dot(normalize(ls.normal), -L));
+    if (cosLight <= 1e-6f)
+        return float3(0.0f);
+
+    float maxDist = dist - 2.0f * SHADOW_EPS;
+    if (maxDist <= 0.0f)
+        return float3(0.0f);
+
+    Ray shadowRay;
+    shadowRay.origin = hitPos + Ng * SHADOW_EPS;
+    shadowRay.direction = L;
+    if (traceShadowSceneBVH(tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex, shadowRay, maxDist))
+        return float3(0.0f);
+
+    float3 Le = resolveTriangleEmissionTextured(triangles, ls.triIndex, ls.uv,
+                                                materials, materialCount,
+                                                materialsPBR, materialPBRCount,
+                                                sceneTextures);
+    if (luminance3(Le) <= 1e-6f)
+        return float3(0.0f);
+
+    float pdfLight = ls.selectionPdf * dist2 / max(cosLight * ls.area, 1e-6f);
+    if (pdfLight <= 1e-8f)
+        return float3(0.0f);
+
+    float pdfBsdf = pdfSurfaceBSDF(N, V, L, baseColor, metallic, roughness);
+    float mis = powerHeuristic(pdfLight, pdfBsdf);
+    float3 f = evalSurfaceBRDF(N, V, L, baseColor, metallic, roughness);
+    return Le * f * (NdL * mis / pdfLight);
+}
+
+
+// ======================
+// Просчет теней/освещения от источников
+// ======================
+
+inline float3 computeLightingAtPointInstanced(
+    float3                        hitPos,
+    float3                        N,
+    float3                        Ng,
+    float3                        baseColor,
+    float                         metallic,
+    float                         roughness,
+    float3                        V,
+    const device BVHNode         *tlasNodes,
+    const device BVHNode         *meshNodes,
+    const device Triangle        *triangles,
+    const device SceneInstanceGPU *instances,
+    uint                          tlasNodeCount,
+    uint                          meshNodeCount,
+    uint                          instanceCount,
+    int                           rootIndex,
+    const device LightGPU        *lights,
+    uint                          lightCount,
+    uint                          baseSeed)
+{
+    float3 result = float3(0.0f);
+    if (lights == nullptr || lightCount == 0u)
+        return result;
+
+    // Use geometric normal for shadow ray offset to avoid self-shadowing with normal maps
+    float3 shadowOrigin = hitPos + Ng * SHADOW_EPS;
+
+    float r = clamp(roughness, 0.05f, 0.95f);
+    metallic = clamp(metallic, 0.0f, 1.0f);
+
+    float3 F0 = lerp3(float3(0.04f), baseColor, metallic);
+
+    float alpha = r * r;
+    float NdV   = max(dot(N, V), 0.0f);
+
+    float k = (r + 1.0f);
+    k = (k * k) * 0.125f; // (r+1)^2 / 8
+
+    for (uint i = 0u; i < lightCount; ++i)
+    {
+        const device LightGPU &light = lights[i];
+
+        int   type    = light.type;
+        float3 lp     = float3(light.position);
+        float3 ld     = normalize(float3(light.direction));
+        float  radius = light.radius;
+
+        float3 L;
+        float  dist      = 1.0f;
+        bool   hasFinite = true;
+
+        if (type == LIGHT_TYPE_DIRECTIONAL)
+        {
+            L         = -ld;
+            hasFinite = false;
+        }
+        else
+        {
+            float3 toLightCenter = lp - hitPos;
+
+            if (radius > 0.0f)
+            {
+                uint seed1 = baseSeed ^ (0x9E3779B9u * (i * 2u + 1u));
+                uint seed2 = baseSeed ^ (0x9E3779B9u * (i * 2u + 2u));
+
+                float u1 = rand01(seed1);
+                float u2 = rand01(seed2);
+
+                float z   = 1.0f - 2.0f * u1;
+                float phi = 2.0f * PI * u2;
+                float rxy = sqrt(max(0.0f, 1.0f - z * z));
+
+                float3 offset = float3(
+                    rxy * cos(phi),
+                    rxy * sin(phi),
+                    z
+                ) * radius;
+
+                float3 samplePos = lp + offset;
+                float3 toLight   = samplePos - hitPos;
+                dist = length(toLight);
+                if (dist <= 0.0f)
+                    continue;
+
+                L  = toLight / dist;
+                lp = samplePos;
+            }
+            else
+            {
+                dist = length(toLightCenter);
+                if (dist <= 0.0f)
+                    continue;
+                L = toLightCenter / dist;
+            }
+        }
+
+        float NdL = dot(N, L);
+        if (NdL <= 0.0f)
+            continue;
+
+                float attenuation = 1.0f;
+        if (hasFinite)
+        {
+            float falloffDist = max(dist * LIGHT_FALLOFF_DISTANCE_SCALE, 1e-3f);
+            float r2 = falloffDist * falloffDist;
+            if (r2 <= 0.0f)
+                continue;
+
+            // Базовый inverse-square
+            attenuation = INV_4PI / r2;
+
+            // Дополнительная форма затухания по AttenuationRadius
+            if (light.attenuationRadius > 0.0f)
+            {
+                float R = light.attenuationRadius * LIGHT_ATTENUATION_RADIUS_SCALE;
+
+                if (dist >= R)
+                    continue;
+
+                float s  = dist / R;
+                float s2 = s * s;
+
+                const float F = 1.0f; // тот же F, что и на CPU
+                float num = 1.0f - s2;
+                num *= num;           // (1 - s^2)^2
+                float den = 1.0f + F * s2;
+
+                float extra = (den > 0.0f) ? (num / den) : 0.0f;
+
+                attenuation *= extra;
+            }
+        }
+
+        float intensity = light.intensity * attenuation * LIGHT_EXPOSURE_GPU;
+
+        if (type == LIGHT_TYPE_SPOT)
+        {
+            float  spotSize  = max(light.spotSize, 1e-4f);
+            float  spotBlend = clamp01(light.spotBlend);
+
+            float outerAngle = 0.5f * spotSize;
+            float innerAngle = outerAngle * (1.0f - spotBlend);
+
+            float cosOuter = cos(outerAngle);
+            float cosInner = cos(innerAngle);
+
+            float3 dirToPoint = normalize(hitPos - lp);
+            float  cosTheta   = dot(ld, dirToPoint);
+
+            if (cosTheta <= 0.0f)
+                continue;
+
+            float spotFactor = 0.0f;
+            if (spotBlend <= 0.0f || cosInner <= cosOuter)
+            {
+                spotFactor = (cosTheta >= cosOuter) ? 1.0f : 0.0f;
+            }
+            else
+            {
+                if (cosTheta <= cosOuter)
+                    spotFactor = 0.0f;
+                else if (cosTheta >= cosInner)
+                    spotFactor = 1.0f;
+                else
+                {
+                    float t = (cosTheta - cosOuter) / (cosInner - cosOuter);
+                    t = clamp01(t);
+                    spotFactor = t * t;
+                }
+            }
+
+            intensity *= spotFactor;
+            if (intensity <= 0.0f)
+                continue;
+        }
+
+        if (type == LIGHT_TYPE_AREA)
+        {
+            float3 dirFromLight = normalize(hitPos - lp);
+            float  cosEmit      = dot(ld, dirFromLight);
+            if (cosEmit <= 0.0f)
+                continue;
+            intensity *= cosEmit;
+            if (intensity <= 0.0f)
+                continue;
+        }
+
+        float maxDist = hasFinite ? (dist - SHADOW_EPS) : -1.0f;
+        Ray shadowRay;
+        shadowRay.origin = shadowOrigin;
+        shadowRay.direction  = L;
+        if (traceShadowSceneBVH(tlasNodes, meshNodes, triangles, instances,
+                                tlasNodeCount, meshNodeCount, instanceCount,
+                                rootIndex, shadowRay, maxDist))
         {
             continue;
         }
@@ -2168,9 +2740,13 @@ inline float3 tracePathPixel(uint2                  gid,
 
 inline float3 tracePathPixelTextured(uint2                  gid,
                              uint2                  imgSize,
-                             const device BVHNode  *bvhNodes,
+                             const device BVHNode  *tlasNodes,
+                             const device BVHNode  *meshNodes,
                              const device Triangle *triangles,
-                             uint                   nodeCount,
+                             const device SceneInstanceGPU *instances,
+                             uint                   tlasNodeCount,
+                             uint                   meshNodeCount,
+                             uint                   instanceCount,
                              int                    rootIndex,
                              float3                 camPos,
                              float3                 camForward,
@@ -2245,7 +2821,7 @@ inline float3 tracePathPixelTextured(uint2                  gid,
 
         for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce)
         {
-            HitInfo hit = traceRayBVH(bvhNodes, triangles, nodeCount, rootIndex, ray);
+            HitInfo hit = traceRaySceneBVH(tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex, ray);
             if (!(hit.hit && hit.triIndex >= 0))
             {
                 radiance += throughput * environmentColor(normalize(ray.direction));
@@ -2324,7 +2900,7 @@ inline float3 tracePathPixelTextured(uint2                  gid,
                 if (mp.normalTexIndex >= 0 && uint(mp.normalTexIndex) < MAX_BASE_TEX)
                 {
                     hasNormalTex = true;
-                    Ns = sampleNormalMap(mp.normalTexIndex, uv, Ng, triangles, hit.triIndex, sceneTextures);
+                    Ns = sampleNormalMapInstanced(mp.normalTexIndex, uv, Ng, triangles, instances, hit.instanceIndex, hit.triIndex, sceneTextures);
                 }
                 else
                 {
@@ -2397,12 +2973,12 @@ inline float3 tracePathPixelTextured(uint2                  gid,
             float3 V = normalize(-ray.direction);
 
             uint lightSeed = seedBase ^ (0x9E3779B9u * (uint(bounce) + 1u));
-            float3 directExplicit = computeLightingAtPoint(hitPos, N, Ng, baseColor, metallic, roughness, V,
-                                                           bvhNodes, triangles, nodeCount, rootIndex,
+            float3 directExplicit = computeLightingAtPointInstanced(hitPos, N, Ng, baseColor, metallic, roughness, V,
+                                                           tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex,
                                                            lights, lightCount, lightSeed);
-            float3 directEmissive = sampleDirectEmissiveLightingTextured(hitPos, N, Ng, V, uint(hit.triIndex),
+            float3 directEmissive = sampleDirectEmissiveLightingTexturedInstanced(hitPos, N, Ng, V, uint(hit.triIndex), uint(hit.instanceIndex),
                                                                          baseColor, metallic, roughness,
-                                                                         bvhNodes, triangles, nodeCount, rootIndex,
+                                                                         tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex,
                                                                          materials, materialCount,
                                                                          materialsPBR, materialPBRCount,
                                                                          sceneTextures,
@@ -2488,7 +3064,7 @@ kernel void RayTraceKernel(
     int  rootIndex = *rootIndexPtr;
     CameraData cam = *camPtr;
 
-    if (nodeCount == 0 || rootIndex < 0 || rootIndex >= int(nodeCount))
+    if (nodeCount == 0u || rootIndex < 0 || rootIndex >= int(nodeCount))
     {
         framebuffer[pixelIndex] = packed_float3(0.0f, 0.0f, 0.0f);
         return;
@@ -2636,9 +3212,13 @@ inline float3 filmicTonemapCustom(float3 c,
 
 inline float tracePrimaryDepth(uint2 gid,
                                uint2 imgSize,
-                               const device BVHNode  *bvhNodes,
+                               const device BVHNode  *tlasNodes,
+                               const device BVHNode  *meshNodes,
                                const device Triangle *triangles,
-                               uint nodeCount,
+                               const device SceneInstanceGPU *instances,
+                               uint tlasNodeCount,
+                               uint meshNodeCount,
+                               uint instanceCount,
                                int rootIndex,
                                float3 camPos,
                                float3 camForward,
@@ -2652,7 +3232,7 @@ inline float tracePrimaryDepth(uint2 gid,
                                          float2(0.0f),
                                          camPos, camForward, camUp, camRight,
                                          fovY);
-    HitInfo hit = traceRayBVH(bvhNodes, triangles, nodeCount, rootIndex, primary);
+    HitInfo hit = traceRaySceneBVH(tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex, primary);
     return hit.hit ? hit.t : fallbackDepth;
 }
 
@@ -2674,12 +3254,16 @@ kernel void RayTraceTextureKernel(
     texture2d<float, access::write>      hdrTex   [[texture(1)]],
     const device MaterialGPU         *materials                  [[buffer(10)]],
     constant uint                    *materialCountPtr           [[buffer(11)]],
+    const device BVHNode             *meshNodes                  [[buffer(12)]],
+    const device SceneInstanceGPU    *instances                  [[buffer(13)]],
     const device MaterialGPU_PBR     *materialsPBR               [[buffer(14)]],
     constant uint                    *materialPBRCountPtr        [[buffer(15)]],
     const device EmissiveTriangleGPU *emissiveTriangles          [[buffer(16)]],
     constant uint                    *emissiveTriangleCountPtr   [[buffer(17)]],
     const device DecalGPU            *decals                     [[buffer(18)]],
     constant uint                    *decalCountPtr              [[buffer(19)]],
+    constant uint                    *meshNodeCountPtr           [[buffer(20)]],
+    constant uint                    *instanceCountPtr           [[buffer(21)]],
     array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures [[texture(2)]],
     uint2 gid [[thread_position_in_grid]])
 {
@@ -2691,10 +3275,12 @@ kernel void RayTraceTextureKernel(
         return;
 
     uint nodeCount = *nodeCountPtr;
+    uint meshNodeCount = (meshNodeCountPtr != nullptr) ? *meshNodeCountPtr : 0u;
+    uint instanceCount = (instanceCountPtr != nullptr) ? *instanceCountPtr : 0u;
     int  rootIndex = *rootIndexPtr;
     CameraData cam = *camPtr;
 
-    if (nodeCount == 0 || rootIndex < 0 || rootIndex >= int(nodeCount))
+    if (nodeCount == 0 || meshNodeCount == 0 || instanceCount == 0 || rootIndex < 0 || rootIndex >= int(nodeCount))
     {
         hdrTex.write(float4(0.0, 0.0, 0.0, 1.0e30f), gid);
         return;
@@ -2716,16 +3302,16 @@ kernel void RayTraceTextureKernel(
     uint decalCount = (decalCountPtr != nullptr) ? *decalCountPtr : 0u;
 
     float depthValue = tracePrimaryDepth(gid, imgSize,
-                                         bvhNodes, triangles,
-                                         nodeCount, rootIndex,
+                                         bvhNodes, meshNodes, triangles, instances,
+                                         nodeCount, meshNodeCount, instanceCount, rootIndex,
                                          camPos, camForward, camUp, camRight,
                                          cam.fovY,
                                          1.0e30f);
 
     float3 frameColor = tracePathPixelTextured(
         gid, imgSize,
-        bvhNodes, triangles,
-        nodeCount, rootIndex,
+        bvhNodes, meshNodes, triangles, instances,
+        nodeCount, meshNodeCount, instanceCount, rootIndex,
         camPos, camForward, camUp, camRight,
         cam.fovY,
         spp,

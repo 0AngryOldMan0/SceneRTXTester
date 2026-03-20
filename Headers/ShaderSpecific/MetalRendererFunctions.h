@@ -32,8 +32,10 @@ bool RenderFrameMetal(const std::vector<BVHNode> &nodes,
                       const CameraDataCPU &camera,
                       std::vector<Vec3> &framebuffer);
 
-bool RenderFrameMetalTexture(const std::vector<BVHNode> &nodes,
+bool RenderFrameMetalTexture(const std::vector<BVHNode> &tlasNodes,
+                             const std::vector<BVHNode> &meshNodes,
                              const std::vector<Triangle> &tris,
+                             const std::vector<SceneInstanceGPU> &instances,
                              const std::vector<Light> &lights,
                              int rootIndex,
                              const CameraDataCPU &cameraCPU,

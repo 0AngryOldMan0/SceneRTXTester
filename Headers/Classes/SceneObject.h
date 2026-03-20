@@ -3,9 +3,12 @@
 #include "Triangles.h"
 #include "BVHNode.h"
 
+#include <array>
 #include <string>
 #include <vector>
 #include <unordered_map>
+
+using SceneTransformMatrix = std::array<float, 16>;
 
 class SceneObject
 {
@@ -16,39 +19,45 @@ public:
     // ---- Геттеры ----
     const std::string &getName() const;
     const std::vector<Triangle> &getTriangles() const;
-    std::vector<Triangle> &getTrianglesMutable(); // чтобы не делать const_cast в meta loader
+    std::vector<Triangle> &getTrianglesMutable();
     const std::vector<BVHNode> &getBVHNodes() const;
     int getRootIndex() const;
 
-    // Вернёт nullptr, если для этого треугольника нет материала
     const std::string *getTriangleMaterialName(std::size_t triIndex) const;
-
-    // Зарегистрировать имя материала и получить его id (0..N-1), либо вернуть уже существующий
     int registerMaterialName(const std::string &matName);
+
+    const std::vector<SceneTransformMatrix> &getInstanceTransforms() const;
+    std::vector<SceneTransformMatrix> &getInstanceTransformsMutable();
+    std::size_t getInstanceCount() const;
+    bool hasInstances() const;
+
+    const std::string &getMeshAssetId() const;
+    const std::string &getMeshSpace() const;
 
     // ---- Сеттеры / модификация ----
     void setName(const std::string &newName);
 
-    // Устанавливает треугольники и сбрасывает привязку материалов (все tri -> -1)
     void setTriangles(const std::vector<Triangle> &tris);
-    void setTriangles(std::vector<Triangle> &&tris); // move
+    void setTriangles(std::vector<Triangle> &&tris);
 
     void setBVHNodes(const std::vector<BVHNode> &newNodes);
-    void setBVHNodes(std::vector<BVHNode> &&newNodes); // move
+    void setBVHNodes(std::vector<BVHNode> &&newNodes);
 
     void setRootIndex(int index);
 
-    // Добавление треугольника без материала (materialId = -1)
     void addTriangle(const Triangle &tri);
-
-    // Добавление треугольника с известным materialId
     void addTriangle(const Triangle &tri, int materialId);
-
-    // Добавление треугольника по имени материала (вызовет registerMaterialName)
     void addTriangle(const Triangle &tri, const std::string &materialName);
 
     void addBVHNode(const BVHNode &node);
     void computeTriangleAABBs();
+
+    void setInstanceTransforms(const std::vector<SceneTransformMatrix> &transforms);
+    void setInstanceTransforms(std::vector<SceneTransformMatrix> &&transforms);
+    void addInstanceTransform(const SceneTransformMatrix &transform);
+
+    void setMeshAssetId(const std::string &id);
+    void setMeshSpace(const std::string &space);
 
     // ---- Вспомогательные методы ----
     bool isEmpty() const;
@@ -62,7 +71,6 @@ public:
     const Vec3 &getBaseColor() const;
     void setBaseColor(const Vec3 &color);
 
-    // Применить один материал ко всему объекту (fallback / старый режим)
     void applyMaterial(const Vec3 &baseColor,
                        const Vec3 &emission,
                        float metallic,
@@ -80,10 +88,11 @@ private:
 
     Vec3 baseColor_{1.0f, 1.0f, 1.0f};
 
-    // ---- Многоматериальность ----
     std::vector<std::string> materialNames_;
     std::vector<int> triangleMaterialIds_;
-
-    // быстрый поиск id по имени
     std::unordered_map<std::string, int> materialNameToId_;
+
+    std::string meshAssetId_;
+    std::string meshSpace_;
+    std::vector<SceneTransformMatrix> instanceTransforms_;
 };

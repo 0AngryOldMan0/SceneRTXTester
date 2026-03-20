@@ -242,10 +242,13 @@ int main(int argc, char **argv)
 
         stats = scene.getStats();
         std::cout << std::fixed << std::setprecision(3);
-        std::cout << "Total triangles:   " << stats.totalTriangles << "\n";
-        std::cout << "Total objects:   " << stats.objectCount << "\n";
-        std::cout << "Global BVH Nodes:   " << stats.globalBVHNodes << "\n";
-        std::cout << "Global BVH Depth:   " << stats.globalBVHDepth << "\n";
+        std::cout << "Prototype triangles:   " << stats.uniqueTriangles << "\n";
+        std::cout << "Expanded triangles:    " << stats.totalTriangles << "\n";
+        std::cout << "Prototype objects:     " << stats.prototypeCount << "\n";
+        std::cout << "Total instances:       " << stats.instanceCount << "\n";
+        std::cout << "TLAS Nodes:            " << stats.globalBVHNodes << "\n";
+        std::cout << "BLAS Nodes:            " << stats.meshBVHNodes << "\n";
+        std::cout << "Global BVH Depth:      " << stats.globalBVHDepth << "\n";
         std::cout << "Load time (scene):   " << msLoad   << " ms\n";
         std::cout << "Meta load time:      " << std::chrono::duration<double, std::milli>(tBVH0 - tLoad1).count() << " ms\n";
         std::cout << "BVH build time:      " << msBVH    << " ms\n";

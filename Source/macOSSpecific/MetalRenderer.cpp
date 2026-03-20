@@ -123,53 +123,7 @@ bool MetalRenderer::render(const Scene &scene,
                            const Camera &camera,
                            std::vector<Vec3> &framebuffer)
 {
-    using Clock = std::chrono::high_resolution_clock;
-
-    if (!scene.hasGlobalBVH())
-    {
-        std::cerr << "Ошибка: глобальный BVH не построен\n";
-        return false;
-    }
-
-    // Ensure output size (avoid reallocations inside GPU wrapper)
-    framebuffer.resize(pixelCount(imageWidth_, imageHeight_));
-
-    MonitoringFrameStats frameStats;
-    frameStats.frameIndex = static_cast<int>(stats_.size());
-
-    const auto frameStart = Clock::now();
-
-    const CameraDataCPU camData = prepareCameraData(camera, scene.getMainLight().position);
-
-    const bool success = RenderFrameMetal(scene.getGlobalNodes(),
-                                          scene.getGlobalTriangles(),
-                                          scene.getLights(),
-                                          scene.getGlobalRootIndex(),
-                                          camData,
-                                          framebuffer);
-
-    const auto frameEnd = Clock::now();
-
-    if (success)
-    {
-        frameStats.raysTraced =
-            static_cast<std::uint64_t>(imageWidth_) *
-            static_cast<std::uint64_t>(imageHeight_) *
-            static_cast<std::uint64_t>(samplesPerPixel_);
-
-        frameStats.frameRenderTimeMs =
-            std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
-
-        if (frameStats.frameRenderTimeMs > 0.0)
-        {
-            frameStats.raysPerSecond =
-                static_cast<double>(frameStats.raysTraced) / (frameStats.frameRenderTimeMs / 1000.0);
-        }
-
-        stats_.push_back(frameStats);
-    }
-
-    return success;
+    return renderTexture(scene, camera, framebuffer);
 }
 
 CameraDataCPU MetalRenderer::prepareCameraData(const Camera &camera, const Vec3 &lightPos) const
@@ -218,7 +172,9 @@ bool MetalRenderer::renderTexture(const Scene &scene,
     const CameraDataCPU camData = prepareCameraData(camera, scene.getMainLight().position);
 
     const bool success = RenderFrameMetalTexture(scene.getGlobalNodes(),
+                                                 scene.getGlobalMeshNodes(),
                                                  scene.getGlobalTriangles(),
+                                                 scene.getGlobalInstances(),
                                                  scene.getLights(),
                                                  scene.getGlobalRootIndex(),
                                                  camData,
