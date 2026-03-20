@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdint>
+#include <limits>
 //======
 #include "RenderManager.h"
 #include "Scene.h"
@@ -68,6 +69,32 @@ namespace
         const int ok = stbi_write_png(filename.c_str(), width, height, 3, pixels.data(), stride);
         if (!ok)
             throw std::runtime_error("Не удалось записать PNG-файл: " + filename);
+    }
+
+    std::vector<int> BuildMetalSppSchedule(TextureRenderMode mode,
+                                           int baseSamplesPerPixel)
+    {
+        constexpr int kPreviewSpp = 2;
+        constexpr int kProgressivePassCount = 4;
+
+        std::vector<int> schedule;
+        if (mode == TextureRenderMode::Preview)
+        {
+            schedule.push_back(std::max(1, std::min(baseSamplesPerPixel, kPreviewSpp)));
+            return schedule;
+        }
+
+        int spp = std::max(1, baseSamplesPerPixel);
+        schedule.reserve(kProgressivePassCount);
+        for (int i = 0; i < kProgressivePassCount; ++i)
+        {
+            schedule.push_back(spp);
+            if (spp > (std::numeric_limits<int>::max() / 2))
+                break;
+            spp *= 2;
+        }
+
+        return schedule;
     }
 }
 
@@ -170,7 +197,9 @@ void RenderManager::saveStats(const std::string &filenamePrefix) const
 bool RenderManager::renderFrameTexture(Scene &scene,
                                        Camera &camera,
                                        const std::string &rendererName,
-                                       const std::string &outputPath)
+                                       const std::string &outputPath,
+                                       TextureRenderMode mode,
+                                       int baseSamplesPerPixel)
 {
     Renderer *renderer = getRenderer(rendererName);
     if (!renderer)
@@ -193,7 +222,6 @@ bool RenderManager::renderFrameTexture(Scene &scene,
     framebuffer.resize(pixelCount);
 
     bool success = true;
-    constexpr int N = 1; // Количество прогрессивных кадров
     bool handled = false;
 
     // Always reset accumulation once before progressive loop for GPU renderers.
@@ -202,10 +230,15 @@ bool RenderManager::renderFrameTexture(Scene &scene,
 #ifdef USE_METAL_RENDERER
     if (auto *metal = dynamic_cast<MetalRenderer *>(renderer))
     {
+        const std::vector<int> sppSchedule = BuildMetalSppSchedule(mode, baseSamplesPerPixel);
         const MetalAccumulationMode previousMode = metal->getAccumulationMode();
-        metal->setAccumulationMode(MetalAccumulationMode::FinalStill);
-        for (int i = 0; i < N; ++i)
+        metal->setAccumulationMode(mode == TextureRenderMode::Preview
+                                       ? MetalAccumulationMode::PreviewProgressive
+                                       : MetalAccumulationMode::FinalStill);
+
+        for (std::size_t i = 0; i < sppSchedule.size(); ++i)
         {
+            renderer->setSamplesPerPixel(sppSchedule[i]);
             if (!metal->renderTexture(scene, camera, framebuffer))
             {
                 success = false;
@@ -215,6 +248,8 @@ bool RenderManager::renderFrameTexture(Scene &scene,
             const std::string outPath = outputPath + "_" + std::to_string(i) + ".png";
             SaveFrameBufferToPNG(framebuffer, w, h, outPath);
         }
+
+        renderer->setSamplesPerPixel(baseSamplesPerPixel);
         metal->setAccumulationMode(previousMode);
         handled = true;
     }
@@ -225,15 +260,13 @@ bool RenderManager::renderFrameTexture(Scene &scene,
     {
         if (auto *hip = dynamic_cast<HIPRenderer *>(renderer))
         {
-            for (int i = 0; i < N; ++i)
+            if (!hip->renderTexture(scene, camera, framebuffer))
             {
-                if (!hip->renderTexture(scene, camera, framebuffer))
-                {
-                    success = false;
-                    break;
-                }
-
-                const std::string outPath = outputPath + "_" + std::to_string(i) + ".png";
+                success = false;
+            }
+            else
+            {
+                const std::string outPath = outputPath + "_0.png";
                 SaveFrameBufferToPNG(framebuffer, w, h, outPath);
             }
             handled = true;
@@ -246,15 +279,13 @@ bool RenderManager::renderFrameTexture(Scene &scene,
     {
         if (auto *cudaRenderer = dynamic_cast<CudaRenderer *>(renderer))
         {
-            for (int i = 0; i < N; ++i)
+            if (!cudaRenderer->renderTexture(scene, camera, framebuffer))
             {
-                if (!cudaRenderer->renderTexture(scene, camera, framebuffer))
-                {
-                    success = false;
-                    break;
-                }
-
-                const std::string outPath = outputPath + "_" + std::to_string(i) + ".png";
+                success = false;
+            }
+            else
+            {
+                const std::string outPath = outputPath + "_0.png";
                 SaveFrameBufferToPNG(framebuffer, w, h, outPath);
             }
             handled = true;

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <cstdlib>
 #include <cctype>
+#include <limits>
 
 #include "../Headers/Classes/SceneLoaderFactory.h"
 #include "../Headers/Classes/Scene.h"
@@ -61,6 +62,23 @@ namespace
         return end && *end == '\0';
     }
 
+    static bool TryParseInt(const std::string &s, int &value)
+    {
+        if (!LooksLikeIntegerArg(s.c_str()))
+            return false;
+
+        char *end = nullptr;
+        const long parsed = std::strtol(s.c_str(), &end, 10);
+        if (!end || *end != '\0')
+            return false;
+        if (parsed < static_cast<long>(std::numeric_limits<int>::min()) ||
+            parsed > static_cast<long>(std::numeric_limits<int>::max()))
+            return false;
+
+        value = static_cast<int>(parsed);
+        return true;
+    }
+
     static fs::path DefaultMetaPathFromScene(const fs::path& scenePath)
     {
         const std::string ext = ToLower(scenePath.extension().string());
@@ -77,10 +95,50 @@ namespace
     {
         std::cerr
             << "Использование:\n"
-            << "  " << exe << " <scene_path.(obj/json)> [meta.json] [width height] [spp]\n\n"
+            << "  " << exe << " <scene_path.(obj/json)> [-preview] [-progressive] [meta.json] [width height] [spp]\n\n"
             << "Примеры:\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/Subway.obj Scene/UE5/SubwayTonnel/Subway_meta.json 1920 1080 10\n"
-            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json 1920 1080 10\n";
+            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json 1920 1080 10\n"
+            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -preview\n";
+    }
+
+    static int PromptCameraSelection(const std::vector<SceneMetaCameraInfo> &metaCameras)
+    {
+        std::cout << "Доступные камеры:\n";
+        std::cout << "  " << std::left << std::setw(8) << "Index" << "Name\n";
+        std::cout << "  " << std::left << std::setw(8) << "-----" << "----\n";
+
+        for (std::size_t i = 0; i < metaCameras.size(); ++i)
+        {
+            const std::string cameraName = metaCameras[i].name.empty() ? "<unnamed>" : metaCameras[i].name;
+            std::cout << "  " << std::left << std::setw(8) << i << cameraName << "\n";
+        }
+
+        while (true)
+        {
+            std::cout << "Введите номер камеры для рендера (-1 = все камеры): " << std::flush;
+
+            std::string input;
+            if (!std::getline(std::cin, input))
+                return -1;
+
+            int selectedCamera = -1;
+            if (!TryParseInt(input, selectedCamera))
+            {
+                std::cout << "Некорректный ввод. Введите целое число от -1 до "
+                          << (metaCameras.empty() ? 0 : static_cast<int>(metaCameras.size() - 1))
+                          << ".\n";
+                continue;
+            }
+
+            if (selectedCamera == -1)
+                return selectedCamera;
+
+            if (selectedCamera >= 0 && static_cast<std::size_t>(selectedCamera) < metaCameras.size())
+                return selectedCamera;
+
+            std::cout << "Камеры с номером " << selectedCamera << " нет в списке.\n";
+        }
     }
 
     static std::string DetectRendererName()
@@ -111,12 +169,38 @@ int main(int argc, char **argv)
 
     const fs::path scenePath = fs::path(argv[1]);
 
-    fs::path metaPath = DefaultMetaPathFromScene(scenePath);
-    int argIndex = 2;
+    TextureRenderMode renderMode = TextureRenderMode::Progressive;
+    std::vector<std::string> positionalArgs;
+    positionalArgs.reserve((argc > 2) ? static_cast<std::size_t>(argc - 2) : 0u);
 
-    if (argc > argIndex && !LooksLikeIntegerArg(argv[argIndex]))
+    for (int i = 2; i < argc; ++i)
     {
-        metaPath = fs::path(argv[argIndex]);
+        const std::string arg = argv[i];
+        if (arg == "-preview" || arg == "--preview")
+        {
+            renderMode = TextureRenderMode::Preview;
+            continue;
+        }
+        if (arg == "-progressive" || arg == "--progressive")
+        {
+            renderMode = TextureRenderMode::Progressive;
+            continue;
+        }
+        if (!arg.empty() && arg[0] == '-')
+        {
+            std::cerr << "Неизвестный флаг: " << arg << "\n";
+            PrintUsage(argv[0]);
+            return 1;
+        }
+        positionalArgs.push_back(arg);
+    }
+
+    fs::path metaPath = DefaultMetaPathFromScene(scenePath);
+    std::size_t argIndex = 0;
+
+    if (argIndex < positionalArgs.size() && !LooksLikeIntegerArg(positionalArgs[argIndex].c_str()))
+    {
+        metaPath = fs::path(positionalArgs[argIndex]);
         ++argIndex;
     }
 
@@ -124,15 +208,22 @@ int main(int argc, char **argv)
     int imageHeight = 1080;
     int samplesPerPixel = 4;
 
-    if (argc > argIndex + 1)
+    if (argIndex + 1 < positionalArgs.size())
     {
-        imageWidth  = std::max(1, std::atoi(argv[argIndex + 0]));
-        imageHeight = std::max(1, std::atoi(argv[argIndex + 1]));
+        imageWidth  = std::max(1, std::atoi(positionalArgs[argIndex + 0].c_str()));
+        imageHeight = std::max(1, std::atoi(positionalArgs[argIndex + 1].c_str()));
         argIndex += 2;
     }
-    if (argc > argIndex)
+    if (argIndex < positionalArgs.size())
     {
-        samplesPerPixel = std::max(1, std::atoi(argv[argIndex]));
+        samplesPerPixel = std::max(1, std::atoi(positionalArgs[argIndex].c_str()));
+        ++argIndex;
+    }
+
+    if (argIndex != positionalArgs.size())
+    {
+        PrintUsage(argv[0]);
+        return 1;
     }
 
     try
@@ -208,7 +299,11 @@ int main(int argc, char **argv)
 
         if (!metaCameras.empty())
         {
-            for (std::size_t ci = 0; ci < metaCameras.size(); ++ci) // metaCameras.size()
+            const int selectedCamera = PromptCameraSelection(metaCameras);
+            const std::size_t beginCamera = (selectedCamera < 0) ? 0u : static_cast<std::size_t>(selectedCamera);
+            const std::size_t endCamera = (selectedCamera < 0) ? metaCameras.size() : (beginCamera + 1u);
+
+            for (std::size_t ci = beginCamera; ci < endCamera; ++ci)
             {
                 ApplyMetaCameraToCamera(metaCameras[ci], cam, imageWidth, imageHeight);
 
@@ -217,14 +312,24 @@ int main(int argc, char **argv)
                     outDir /
                     (rendererName + "_TextureFrame_Cam" + std::to_string(ci) + "_" + camName);
 
-                renderManager.renderFrameTexture(scene, cam, rendererName, base.string());
+                renderManager.renderFrameTexture(scene,
+                                                cam,
+                                                rendererName,
+                                                base.string(),
+                                                renderMode,
+                                                samplesPerPixel);
                 std::cout << "Frames for camera: <" << ci << "> generated successfully\n";
             }
         }
         else
         {
             const fs::path base = outDir / (rendererName + "_TextureFrame_DefaultCamera");
-            renderManager.renderFrameTexture(scene, cam, rendererName, base.string());
+            renderManager.renderFrameTexture(scene,
+                                            cam,
+                                            rendererName,
+                                            base.string(),
+                                            renderMode,
+                                            samplesPerPixel);
             std::cout << "Frames for default camera generated successfully\n";
         }
 

@@ -17,6 +17,12 @@
 #include "MetalRenderer.h"
 #endif
 
+enum class TextureRenderMode
+{
+    Progressive = 0,
+    Preview = 1
+};
+
 class RenderManager
 {
 public:
@@ -42,7 +48,9 @@ public:
     bool renderFrameTexture(Scene &scene,
                             Camera &camera,
                             const std::string &rendererName,
-                            const std::string &outputPath);
+                            const std::string &outputPath,
+                            TextureRenderMode mode = TextureRenderMode::Progressive,
+                            int baseSamplesPerPixel = 4);
 
 private:
     std::vector<std::unique_ptr<Renderer>> renderers_;
