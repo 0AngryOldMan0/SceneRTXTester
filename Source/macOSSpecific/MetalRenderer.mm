@@ -362,6 +362,7 @@ namespace
         hash.addFloat(cameraCPU.nearPlane);
         hash.addFloat(cameraCPU.farPlane);
         hash.addFloat(cameraCPU.focusDistance);
+        hash.addFloat(cameraCPU.aspectRatio);
     }
 
     static void HashLight(HashBuilder64 &hash,

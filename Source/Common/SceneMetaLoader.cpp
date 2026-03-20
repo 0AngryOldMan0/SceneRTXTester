@@ -22,6 +22,7 @@ namespace
     using json = nlohmann::json;
 
     constexpr float kPI = 3.14159265358979323846f;
+    static bool ReadBoolFieldLoose(const json& obj, const char* key, bool def);
 
     static Vec3 ReadVec3(const json& j, const Vec3& def)
     {
@@ -243,7 +244,30 @@ namespace
 
         c.position.x *= unitScale; c.position.y *= unitScale; c.position.z *= unitScale;
 
-        c.fovY      = ReadFloatField(jc, "fov_y", 60.0f * kPI / 180.0f);
+        c.aspectRatio = ReadFloatField(jc, "aspect_ratio", 16.0f / 9.0f);
+        c.constrainAspectRatio = ReadBoolFieldLoose(jc, "constrain_aspect_ratio", false);
+
+        const float fovYRad = ReadFloatField(jc, "fov_y", -1.0f);
+        const float fovXRad = ReadFloatField(jc, "fov_x", -1.0f);
+        const float fovDeg = ReadFloatField(jc, "fov", 60.0f);
+        if (fovYRad > 0.0f && std::isfinite(fovYRad))
+        {
+            c.fovY = fovYRad;
+        }
+        else if (fovXRad > 0.0f && c.aspectRatio > 0.0f && std::isfinite(fovXRad))
+        {
+            c.fovY = 2.0f * std::atan(std::tan(fovXRad * 0.5f) / c.aspectRatio);
+        }
+        else if (c.aspectRatio > 0.0f)
+        {
+            const float fovX = fovDeg * kPI / 180.0f;
+            c.fovY = 2.0f * std::atan(std::tan(fovX * 0.5f) / c.aspectRatio);
+        }
+        else
+        {
+            c.fovY = fovDeg * kPI / 180.0f;
+        }
+
         c.clipStart = ReadFloatField(jc, "clip_start", 0.1f) * unitScale;
         c.clipEnd   = ReadFloatField(jc, "clip_end",   1000.0f) * unitScale;
         c.focusDistance = ReadFloatField(jc, "focus_distance", 10.0f) * unitScale;
@@ -640,6 +664,8 @@ static SceneMetaCameraInfo ParseSceneExportCameraInfo(const json& jc, float unit
     c.position.z *= unitScale;
 
     const float aspectRatio = ReadFloatField(jc, "aspect_ratio", 1.0f);
+    c.aspectRatio = (aspectRatio > 0.0f && std::isfinite(aspectRatio)) ? aspectRatio : (16.0f / 9.0f);
+    c.constrainAspectRatio = ReadBoolFieldLoose(jc, "constrain_aspect_ratio", false);
     const float fovYRad     = ReadFloatField(jc, "fov_y", -1.0f);
     const float fovXRad     = ReadFloatField(jc, "fov_x", -1.0f);
     const float fovDeg      = ReadFloatField(jc, "fov", 60.0f);
@@ -648,14 +674,14 @@ static SceneMetaCameraInfo ParseSceneExportCameraInfo(const json& jc, float unit
     {
         c.fovY = fovYRad;
     }
-    else if (fovXRad > 0.0f && aspectRatio > 0.0f)
+    else if (fovXRad > 0.0f && c.aspectRatio > 0.0f)
     {
-        c.fovY = 2.0f * std::atan(std::tan(fovXRad * 0.5f) / aspectRatio);
+        c.fovY = 2.0f * std::atan(std::tan(fovXRad * 0.5f) / c.aspectRatio);
     }
-    else if (aspectRatio > 0.0f)
+    else if (c.aspectRatio > 0.0f)
     {
         const float fovX = fovDeg * kPI / 180.0f;
-        c.fovY = 2.0f * std::atan(std::tan(fovX * 0.5f) / aspectRatio);
+        c.fovY = 2.0f * std::atan(std::tan(fovX * 0.5f) / c.aspectRatio);
     }
     else
     {
@@ -1304,6 +1330,15 @@ bool ApplyMetaCameraToCamera(const SceneMetaCameraInfo& metaCam,
                              int targetWidth,
                              int targetHeight)
 {
+    const float targetAspect =
+        (targetWidth > 0 && targetHeight > 0)
+            ? (static_cast<float>(targetWidth) / static_cast<float>(targetHeight))
+            : (16.0f / 9.0f);
+    const float cameraAspect =
+        (metaCam.constrainAspectRatio && metaCam.aspectRatio > 0.0f && std::isfinite(metaCam.aspectRatio))
+            ? metaCam.aspectRatio
+            : targetAspect;
+
     const Vec3 target{
         metaCam.position.x + metaCam.forward.x,
         metaCam.position.y + metaCam.forward.y,
@@ -1313,12 +1348,7 @@ bool ApplyMetaCameraToCamera(const SceneMetaCameraInfo& metaCam,
     camera.lookAt(metaCam.position, target, metaCam.up);
 
     const float fovYDegrees = metaCam.fovY * 180.0f / kPI;
-
-    float aspect = 1.0f;
-    if (targetWidth > 0 && targetHeight > 0)
-        aspect = (float)targetWidth / (float)targetHeight;
-
-    camera.setPerspective(fovYDegrees, aspect);
+    camera.setPerspective(fovYDegrees, cameraAspect);
     camera.setViewport(targetWidth, targetHeight);
     camera.setClipPlanes(metaCam.clipStart, metaCam.clipEnd);
     camera.setFocusDistance(metaCam.focusDistance);

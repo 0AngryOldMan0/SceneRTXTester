@@ -110,9 +110,11 @@ struct SceneMetaCameraInfo
     Vec3 right{1, 0, 0};
 
     float fovY = 1.0471975512f; // ~60° in radians
+    float aspectRatio = 16.0f / 9.0f;
     float clipStart = 0.1f;
     float clipEnd = 10000.0f;
     float focusDistance = 10.0f;
+    bool constrainAspectRatio = false;
 
     bool hasPostProcess = false;
     SceneMetaPostProcess postProcess{};

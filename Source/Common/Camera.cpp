@@ -82,7 +82,6 @@ void Camera::setViewport(int width, int height)
 {
     viewportWidth_ = std::max(1, width);
     viewportHeight_ = std::max(1, height);
-    aspectRatio_ = static_cast<float>(viewportWidth_) / static_cast<float>(viewportHeight_);
     updateProjectionCache();
 }
 

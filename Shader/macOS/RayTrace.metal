@@ -136,7 +136,7 @@ struct CameraData
     float nearPlane;               // 64
     float farPlane;                // 68
     float focusDistance;           // 72
-    float _pad;                    // 76 -> 80 байт
+    float aspectRatio;             // 76 -> 80 байт
 };
 
 struct Ray
@@ -647,7 +647,8 @@ inline Ray makePrimaryRayJittered(int px, int py,
                                   float3 camForward,
                                   float3 camUp,
                                   float3 camRight,
-                                  float  fovY)
+                                  float  fovY,
+                                  float  aspectRatio)
 {
     float fx = (float(px) + 0.5f + jitter.x);
     float fy = (float(py) + 0.5f + jitter.y);
@@ -656,7 +657,7 @@ inline Ray makePrimaryRayJittered(int px, int py,
     float ndcY = (fy / float(height)) * 2.0f - 1.0f;
     ndcY = -ndcY;
 
-    float aspect     = float(width) / float(height);
+    float aspect     = (aspectRatio > 0.0f) ? aspectRatio : (float(width) / float(height));
     float tanHalfFov = tan(0.5f * fovY);
 
     float3 dirCam = float3(
@@ -2473,6 +2474,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                      float3                 camUp,
                                                      float3                 camRight,
                                                      float                  fovY,
+                                                     float                  aspectRatio,
                                                      int                    samplesPerPixel,
                                                      const device LightGPU *lights,
                                                      uint                   lightCount,
@@ -2539,7 +2541,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
 
         float2 jitter = (UV_DEBUG_MODE != 0 || s == 0) ? float2(0.0f) : float2(jx, jy);
         Ray ray = makePrimaryRayJittered(int(gid.x), int(gid.y), int(w), int(h), jitter,
-                                         camPos, camForward, camUp, camRight, fovY);
+                                         camPos, camForward, camUp, camRight, fovY, aspectRatio);
 
         float3 throughput = float3(1.0f);
         float3 radiance   = float3(0.0f);
@@ -2966,6 +2968,7 @@ kernel void RayTraceTextureKernel(
         nodeCount, meshNodeCount, instanceCount, rootIndex,
         camPos, camForward, camUp, camRight,
         cam.fovY,
+        cam.aspectRatio,
         spp,
         lights, lightCount,
         sampleBaseIndex,

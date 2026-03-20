@@ -149,7 +149,7 @@ CameraDataCPU MetalRenderer::prepareCameraData(const Camera &camera) const
     camData.nearPlane = camera.getNearPlane();
     camData.farPlane = camera.getFarPlane();
     camData.focusDistance = camera.getFocusDistance();
-    camData.pad = 0.0f;
+    camData.aspectRatio = camera.getAspectRatio();
     return camData;
 }
 

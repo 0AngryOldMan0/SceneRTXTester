@@ -17,7 +17,7 @@ struct CameraDataCPU
     float nearPlane;     // 64
     float farPlane;      // 68
     float focusDistance; // 72
-    float pad;           // 76 -> всего 80
+    float aspectRatio;   // 76 -> всего 80
 };
 
 static_assert(sizeof(CameraDataCPU) == 80); // Необходимое преобразование для сопоставления размера типа данных на ЦПУ и ГПУ
