@@ -6,12 +6,11 @@ constant float INV_PI           = 1.0f / PI;
 constant float INV_4PI          = 1.0f / (4.0f * PI);
 constant float SHADOW_EPS       = 1e-3f;
 
-constant float LIGHT_EXPOSURE_GPU             = 265.0f; // прямые UE-источники: заметно усиливаем, чтобы расширить освещённые зоны
-constant float EMISSION_VISIBLE_EXPOSURE_GPU   = 0.065f;  // видимая яркость emissive-поверхностей: сильнее приглушаем, чтобы текстура стекла читалась
-constant float EMISSION_LIGHT_EXPOSURE_GPU     = 1.12f;  // вклад emissive-поверхностей как источников света держим умеренным
-constant float ENV_INTENSITY_GPU               = 0.9f;   // яркость environment
-constant float LIGHT_FALLOFF_DISTANCE_SCALE    = 0.30f;  // < 1 => свет спадает мягче и покрывает заметно большую площадь
-constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 2.20f;  // сильнее расширяем effective attenuation radius UE
+constant float EMISSION_VISIBLE_EXPOSURE_GPU   = 1.0f;   // emissive surfaces use exported scene energy directly
+constant float EMISSION_LIGHT_EXPOSURE_GPU     = 1.0f;   // emissive lighting also uses exported scene energy directly
+constant float ENV_INTENSITY_GPU               = 0.08f;  // subtle fallback only; scene lights should dominate
+constant float LIGHT_FALLOFF_DISTANCE_SCALE    = 1.0f;   // use exported light distance/falloff as-is
+constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 1.0f;   // use exported attenuation radius as-is
 
 // --- параметры денойзера ---
 constant bool  DENOISE_ENABLE        = true;
@@ -20,6 +19,7 @@ constant float DENOISE_SIGMA_COLOR   = 0.20f;  // чувствительност
 constant float DENOISE_BLEND_FACTOR  = 0.40f;  // 0 = полностью размыть, 1 = без фильтра
 
 constant int UV_DEBUG_MODE = 0;
+constant int LIGHTING_CALIBRATION_MODE = 0;
 
 /*
 0 — обычный рендер
@@ -39,6 +39,12 @@ constant int UV_DEBUG_MODE = 0;
 14 — ORM decoded как RGB = (AO, Rough, Metal)
 15 — presence bits RGB = (hasPBR, hasBaseColorTex, hasNormalTex)
 16 — presence bits RGB = (hasORMTex, hasRoughnessTex, hasMetallicTex)
+*/
+
+/*
+LIGHTING_CALIBRATION_MODE:
+0 — обычный рендер
+1 — raw lighting calibration: no fallback env, no fog/bloom/tonemap/vignette/grain
 */
 
 // Normal map conventions (toggle if green channel looks inverted)
@@ -585,6 +591,9 @@ inline float3 debugGamma(float3 c)
 
 inline float3 environmentColor(float3 dir)
 {
+    if (LIGHTING_CALIBRATION_MODE != 0)
+        return float3(0.0f);
+
     float t = clamp(dir.y * 0.5f + 0.5f, 0.0f, 1.0f);
 
     float3 ground = float3(0.05f, 0.05f, 0.06f);
@@ -1440,7 +1449,7 @@ inline float3 resolveTriangleEmissionTextured(const device Triangle *triangles,
                                               const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
 {
     const device Triangle &tri = triangles[triIndex];
-    float3 emissive = float3(tri.emission) * 3.0f;
+    float3 emissive = float3(tri.emission);
     int matId = tri.materialIndex;
 
     if (materialsPBR != nullptr && materialPBRCount > 0u && matId >= 0 && uint(matId) < materialPBRCount)
@@ -2056,7 +2065,7 @@ inline float3 computeLightingAtPoint(
             }
         }
 
-        float intensity = light.intensity * attenuation * LIGHT_EXPOSURE_GPU;
+        float intensity = light.intensity * attenuation;
 
         if (type == LIGHT_TYPE_SPOT)
         {
@@ -2365,7 +2374,7 @@ inline float3 computeLightingAtPointInstanced(
             }
         }
 
-        float intensity = light.intensity * attenuation * LIGHT_EXPOSURE_GPU;
+        float intensity = light.intensity * attenuation;
 
         if (type == LIGHT_TYPE_SPOT)
         {
@@ -3193,6 +3202,14 @@ kernel void PostProcessKernel(
     if (UV_DEBUG_MODE != 0)
     {
         outTex.write(float4(hdrTex.sample(g_postSampler, uv).rgb, 1.0f), gid);
+        return;
+    }
+
+    if (LIGHTING_CALIBRATION_MODE != 0)
+    {
+        float3 rawColor = max(hdrTex.sample(g_postSampler, uv).rgb, float3(0.0f));
+        rawColor = pow(min(rawColor, float3(32.0f)), float3(1.0f / 2.2f));
+        outTex.write(float4(clamp(rawColor, 0.0f, 1.0f), 1.0f), gid);
         return;
     }
 

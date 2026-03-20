@@ -1531,17 +1531,18 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
 {
     PostProcessParamsCPU pp{};
 
-    pp.exposure = 0.72f;
-    pp.bloomIntensity = 0.09f;
-    pp.bloomThreshold = -0.04f;
+    // Neutral fallback until scene-exported post-process overrides it.
+    pp.exposure = 1.0f;
+    pp.bloomIntensity = 0.0f;
+    pp.bloomThreshold = 1.0f;
     pp.vignetteIntensity = 0.0f;
     pp.chromaticAberration = 0.0f;
     pp.filmGrainIntensity = 0.0f;
-    pp.filmSlope = 1.0f;
-    pp.filmToe = 0.52f;
-    pp.filmShoulder = 1.0f;
+    pp.filmSlope = 0.88f;
+    pp.filmToe = 0.55f;
+    pp.filmShoulder = 0.26f;
     pp.filmBlackClip = 0.0f;
-    pp.filmWhiteClip = 0.78f;
+    pp.filmWhiteClip = 0.04f;
 
     pp.fogDensity = 0.0f;
     pp.fogHeightFalloff = 0.0f;
@@ -1555,10 +1556,10 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
     pp.fogAlbedoZ = 1.0f;
     pp.volumetricFog = 0.0f;
 
-    pp.colorSaturationX = 1.02f;
-    pp.colorSaturationY = 0.99f;
-    pp.colorSaturationZ = 0.97f;
-    pp.shadowLift = 0.006f;
+    pp.colorSaturationX = 1.0f;
+    pp.colorSaturationY = 1.0f;
+    pp.colorSaturationZ = 1.0f;
+    pp.shadowLift = 0.0f;
 
     if (metaRes)
     {
@@ -1566,12 +1567,12 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
         {
             const SceneMetaPostProcess &src = metaRes->postProcess;
             const float exposureBias = std::clamp(src.autoExposureBias, -4.0f, 4.0f);
-            pp.exposure = 0.72f * std::pow(2.0f, 0.18f * exposureBias);
+            pp.exposure = std::exp2(exposureBias);
 
-            pp.bloomIntensity = std::max(0.0f, src.bloomIntensity) * 0.34f;
-            pp.bloomThreshold = std::clamp(src.bloomThreshold * 0.40f + 0.02f, -1.0f, 1.25f);
+            pp.bloomIntensity = std::max(0.0f, src.bloomIntensity);
+            pp.bloomThreshold = src.bloomThreshold;
 
-            pp.vignetteIntensity = std::clamp(src.vignetteIntensity * 0.82f, 0.0f, 1.0f);
+            pp.vignetteIntensity = std::clamp(src.vignetteIntensity, 0.0f, 1.0f);
             pp.chromaticAberration = std::max(0.0f, src.chromaticAberration);
             pp.filmGrainIntensity = std::max(0.0f, src.filmGrainIntensity);
             pp.filmSlope = std::max(0.05f, src.filmSlope);
