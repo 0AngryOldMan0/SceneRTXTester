@@ -28,6 +28,7 @@ public:
                        const Camera &camera,
                        std::vector<Vec3> &framebuffer);
 
+    bool preloadSceneResources();
     void resetAccumulation() override;
 
 private:

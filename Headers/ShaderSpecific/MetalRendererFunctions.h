@@ -28,6 +28,7 @@ enum class MetalAccumulationMode : std::uint32_t
 
 // Инициализация Metal (одноразово)
 bool InitMetalRenderer();
+bool PreloadMetalSceneResources(const SceneMetaResources *metaRes);
 
 bool RenderFrameMetalTexture(const std::vector<BVHNode> &tlasNodes,
                              const std::vector<BVHNode> &meshNodes,

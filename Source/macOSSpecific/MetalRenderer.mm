@@ -1624,6 +1624,12 @@ bool InitMetalRenderer()
 {
     @autoreleasepool
     {
+        if (g_device && g_queue && g_pipelineTexture && g_pipelineBloomExtract &&
+            g_pipelineBloomBlurH && g_pipelineBloomBlurV && g_pipelinePostProcess)
+        {
+            return true;
+        }
+
         g_device = MTLCreateSystemDefaultDevice();
         if (!g_device)
         {
@@ -1699,6 +1705,21 @@ bool InitMetalRenderer()
 
         return true;
     }
+}
+
+bool PreloadMetalSceneResources(const SceneMetaResources *metaRes)
+{
+    if (!InitMetalRenderer())
+        return false;
+
+    if (!EnsureMaterialAndTexturesLoaded(metaRes))
+        return false;
+
+    TextureFrameProfile preloadProfile{};
+    if (!EnsureDecalBufferUploaded(metaRes, preloadProfile))
+        return false;
+
+    return true;
 }
 
 // ВАЖНО: добавили параметр metaRes, чтобы передать список материалов/текстур из SceneMetaLoader.

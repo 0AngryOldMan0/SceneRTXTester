@@ -266,6 +266,36 @@ int main(int argc, char **argv)
                       << metaPath.string() << "\n";
         }
 
+        const auto tMeta1 = Clock::now();
+        RenderManager renderManager;
+
+        const auto tPreload0 = tMeta1;
+        bool didMetalPreload = false;
+        for (auto &renderer : renderManager.getRenderers())
+        {
+    #ifdef USE_METAL_RENDERER
+            if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
+            {
+                metal->setMetaResources(&metaRes);
+                didMetalPreload = true;
+            }
+    #endif
+            renderer->setSamplesPerPixel(samplesPerPixel);
+            renderer->setImageSize(imageWidth, imageHeight);
+
+    #ifdef USE_METAL_RENDERER
+            if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
+            {
+                if (!metal->preloadSceneResources())
+                {
+                    std::cerr << "Ошибка preload Metal resources\n";
+                    return 1;
+                }
+            }
+    #endif
+        }
+        const auto tPreload1 = Clock::now();
+
         auto stats = scene.getStats();
         BVHBuilder::Strategy bvhStrategy = BVHBuilder::Strategy::BottomUp;
         if (stats.totalTriangles > 20000)
@@ -274,18 +304,6 @@ int main(int argc, char **argv)
         const auto tBVH0 = Clock::now();
         scene.buildGlobalBVH(bvhStrategy);
         const auto tBVH1 = Clock::now();
-
-        RenderManager renderManager;
-
-        for (auto &renderer : renderManager.getRenderers())
-        {
-    #ifdef USE_METAL_RENDERER
-            if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
-                metal->setMetaResources(&metaRes);
-    #endif
-            renderer->setSamplesPerPixel(samplesPerPixel);
-            renderer->setImageSize(imageWidth, imageHeight);
-        }
 
         const std::string rendererName = DetectRendererName();
 
@@ -340,6 +358,8 @@ int main(int argc, char **argv)
             std::chrono::duration<double, std::milli>(tLoad1 - tLoad0).count();
         const double msBVH =
             std::chrono::duration<double, std::milli>(tBVH1 - tBVH0).count();
+        const double msPreload =
+            std::chrono::duration<double, std::milli>(tPreload1 - tPreload0).count();
         const double msRender =
             std::chrono::duration<double, std::milli>(tRender1 - tRender0).count();
         const double msTotal =
@@ -355,7 +375,9 @@ int main(int argc, char **argv)
         std::cout << "BLAS Nodes:            " << stats.meshBVHNodes << "\n";
         std::cout << "Global BVH Depth:      " << stats.globalBVHDepth << "\n";
         std::cout << "Load time (scene):   " << msLoad   << " ms\n";
-        std::cout << "Meta load time:      " << std::chrono::duration<double, std::milli>(tBVH0 - tLoad1).count() << " ms\n";
+        std::cout << "Meta load time:      " << std::chrono::duration<double, std::milli>(tMeta1 - tLoad1).count() << " ms\n";
+        if (didMetalPreload)
+            std::cout << "Metal preload time:  " << msPreload << " ms\n";
         std::cout << "BVH build time:      " << msBVH    << " ms\n";
         std::cout << "Render time:         " << msRender << " ms\n";
         std::cout << "Total time:          " << msTotal  << " ms\n";

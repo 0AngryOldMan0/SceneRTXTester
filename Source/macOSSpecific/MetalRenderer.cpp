@@ -110,6 +110,11 @@ bool MetalRenderer::initialize()
     return InitMetalRenderer();
 }
 
+bool MetalRenderer::preloadSceneResources()
+{
+    return PreloadMetalSceneResources(m_metaRes);
+}
+
 void MetalRenderer::cleanup()
 {
     // Dump stats once per session (especially important for progressive texture rendering)
