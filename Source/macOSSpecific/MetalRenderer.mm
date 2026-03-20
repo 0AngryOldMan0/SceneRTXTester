@@ -561,8 +561,6 @@ namespace
         AppendProfileLine(oss, "blur H", p.blurHGpuMs, p.gpuMs);
         AppendProfileLine(oss, "blur V", p.blurVGpuMs, p.gpuMs);
         AppendProfileLine(oss, "final composite", p.finalCompositeGpuMs, p.gpuMs);
-        if (p.primaryDepthGpuMs <= 0.0)
-            oss << "    note: primary-depth is not a separate pass in the current texture path; it is folded into path trace.\n";
 
         oss << "  average:\n";
         AppendProfileLine(oss, "avgTotal", avgTotal, avgTotal);

@@ -3,7 +3,6 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdint>
-#include <limits>
 //======
 #include "RenderManager.h"
 #include "Scene.h"
@@ -75,7 +74,8 @@ namespace
                                            int baseSamplesPerPixel)
     {
         constexpr int kPreviewSpp = 2;
-        constexpr int kProgressivePassCount = 4;
+        constexpr int kMaxStableDispatchSpp = 4;
+        constexpr int kDefaultProgressivePassCount = 4;
 
         std::vector<int> schedule;
         if (mode == TextureRenderMode::Preview)
@@ -84,14 +84,21 @@ namespace
             return schedule;
         }
 
-        int spp = std::max(1, baseSamplesPerPixel);
-        schedule.reserve(kProgressivePassCount);
-        for (int i = 0; i < kProgressivePassCount; ++i)
+        const int requestedSpp = std::max(1, baseSamplesPerPixel);
+        const int dispatchSpp = std::min(requestedSpp, kMaxStableDispatchSpp);
+        const int targetTotalSpp =
+            (requestedSpp <= kMaxStableDispatchSpp)
+                ? (dispatchSpp * kDefaultProgressivePassCount)
+                : requestedSpp;
+
+        int accumulatedSpp = 0;
+        schedule.reserve(static_cast<std::size_t>((targetTotalSpp + dispatchSpp - 1) / dispatchSpp));
+        while (accumulatedSpp < targetTotalSpp)
         {
-            schedule.push_back(spp);
-            if (spp > (std::numeric_limits<int>::max() / 2))
-                break;
-            spp *= 2;
+            const int remainingSpp = targetTotalSpp - accumulatedSpp;
+            const int batchSpp = std::min(dispatchSpp, remainingSpp);
+            schedule.push_back(batchSpp);
+            accumulatedSpp += batchSpp;
         }
 
         return schedule;
