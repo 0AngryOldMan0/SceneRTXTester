@@ -34,5 +34,5 @@ private:
     const SceneMetaResources *m_metaRes = nullptr;
     MetalAccumulationMode accumulationMode_ = MetalAccumulationMode::PreviewProgressive;
 
-    CameraDataCPU prepareCameraData(const Camera &camera, const Vec3 &lightPos) const;
+    CameraDataCPU prepareCameraData(const Camera &camera) const;
 };

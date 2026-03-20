@@ -29,15 +29,6 @@ enum class MetalAccumulationMode : std::uint32_t
 // Инициализация Metal (одноразово)
 bool InitMetalRenderer();
 
-// Рендер одного кадра на GPU.
-// framebuffer должен быть размером width * height.
-bool RenderFrameMetal(const std::vector<BVHNode> &nodes,
-                      const std::vector<Triangle> &tris,
-                      const std::vector<Light> &lights,
-                      int rootIndex,
-                      const CameraDataCPU &camera,
-                      std::vector<Vec3> &framebuffer);
-
 bool RenderFrameMetalTexture(const std::vector<BVHNode> &tlasNodes,
                              const std::vector<BVHNode> &meshNodes,
                              const std::vector<Triangle> &tris,

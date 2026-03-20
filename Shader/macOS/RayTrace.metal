@@ -4,9 +4,7 @@ using namespace metal;
 constant float PI               = 3.14159265358979323846f;
 constant float INV_PI           = 1.0f / PI;
 constant float INV_4PI          = 1.0f / (4.0f * PI);
-constant float AMBIENT_STRENGTH = 0.11f;
 constant float SHADOW_EPS       = 1e-3f;
-constant float IMAGE_EXPOSURE   = 0.6f;
 
 constant float LIGHT_EXPOSURE_GPU             = 265.0f; // прямые UE-источники: заметно усиливаем, чтобы расширить освещённые зоны
 constant float EMISSION_VISIBLE_EXPOSURE_GPU   = 0.065f;  // видимая яркость emissive-поверхностей: сильнее приглушаем, чтобы текстура стекла читалась
@@ -166,7 +164,6 @@ struct HitInfo
 };
 
 // Типы источников света (должны соответствовать C++ LightType)
-constant int LIGHT_TYPE_POINT       = 0;
 constant int LIGHT_TYPE_DIRECTIONAL = 1;
 constant int LIGHT_TYPE_SPOT        = 2;
 constant int LIGHT_TYPE_AREA        = 3;
@@ -2461,294 +2458,6 @@ inline float3 computeLightingAtPointInstanced(
     return result;
 }
 
-// ======================
-// Просчет пикселя: базовый (без материалов/текстур)
-// ======================
-inline float3 tracePathPixel(uint2                  gid,
-                             uint2                  imgSize,
-                             const device BVHNode  *bvhNodes,
-                             const device Triangle *triangles,
-                             uint                   nodeCount,
-                             int                    rootIndex,
-                             float3                 camPos,
-                             float3                 camForward,
-                             float3                 camUp,
-                             float3                 camRight,
-                             float                  fovY,
-                             int                    samplesPerPixel,
-                             const device LightGPU *lights,
-                             uint                   lightCount,
-                             uint                   sampleBaseIndex)
-{
-    const int   MAX_BOUNCES = 4;
-    const float EPSILON_POS = SHADOW_EPS;
-
-    uint w = imgSize.x;
-    uint h = imgSize.y;
-    if (gid.x >= w || gid.y >= h)
-        return float3(0.0f);
-
-    int spp = samplesPerPixel;
-    if (spp <= 0) spp = 1;
-    if (UV_DEBUG_MODE != 0) spp = 1; // stable debug
-
-
-    int strataDim   = (int)floor(sqrt((float)spp));
-    if (strataDim < 1) strataDim = 1;
-    int strataCount = strataDim * strataDim;
-
-    float3 pixelColor = float3(0.0f);
-
-    for (int s = 0; s < spp; ++s)
-    {
-        uint sampleIndex = sampleBaseIndex + uint(s);
-        uint seedBase = uint(gid.x) * 73856093u
-                      ^ uint(gid.y) * 19349663u
-                      ^ uint(s)     * 83492791u
-                      ^ sampleIndex * 2654435761u;
-
-        float jx = 0.0f;
-        float jy = 0.0f;
-
-        if (s < strataCount)
-        {
-            int sx = s % strataDim;
-            int sy = s / strataDim;
-
-            uint seedJx = seedBase ^ 0x1234u;
-            uint seedJy = seedBase ^ 0x5678u;
-            float u1 = rand01(seedJx);
-            float u2 = rand01(seedJy);
-
-            float subX = (float(sx) + u1) / float(strataDim);
-            float subY = (float(sy) + u2) / float(strataDim);
-
-            jx = subX - 0.5f;
-            jy = subY - 0.5f;
-        }
-        else
-        {
-            uint seedJx = seedBase ^ 0xABCDEFu;
-            uint seedJy = seedBase ^ 0x13579Bu;
-            jx = rand01(seedJx) - 0.5f;
-            jy = rand01(seedJy) - 0.5f;
-        }
-
-        float2 jitter = (UV_DEBUG_MODE != 0) ? float2(0.0f, 0.0f) : float2(jx, jy);
-
-        Ray ray = makePrimaryRayJittered(
-            int(gid.x), int(gid.y),
-            int(w), int(h),
-            jitter,
-            camPos, camForward, camUp, camRight,
-            fovY
-        );
-
-        float3 throughput = float3(1.0f);
-        float3 radiance   = float3(0.0f);
-
-        for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce)
-        {
-            HitInfo hit = traceRayBVH(bvhNodes,
-                                      triangles,
-                                      nodeCount,
-                                      rootIndex,
-                                      ray);
-            if (!(hit.hit && hit.triIndex >= 0))
-            {
-                float3 env = environmentColor(normalize(ray.direction));
-                radiance += throughput * env;
-                break;
-            }
-
-            float3 hitPos    = hit.position;
-            float3 N         = normalize(hit.normal);
-            float3 Ng        = N;
-            float3 Ns        = N;
-            float  ao        = 1.0f;
-            float  metallic  = clamp(hit.metallic, 0.0f, 1.0f);
-            float  roughness = clamp(hit.roughness, 0.02f, 0.98f);
-
-            float3 baseColor = hit.color;
-            float3 emissive  = hit.emission * 3.0f;
-
-            // --- UV DEBUG (modes 0..16) ---
-            if (UV_DEBUG_MODE != 0 && bounce == 0)
-            {
-                float2 uvW = fract(hit.uv);
-                float3 checker = uvChecker(uvW, 12.0f);
-
-                switch (UV_DEBUG_MODE)
-                {
-                    case 1:  return checker;
-                    case 2:
-                        // UV checker as albedo WITH lighting (no emissive / no metal).
-                        baseColor = checker;
-                        emissive  = float3(0.0f);
-                        metallic  = 0.0f;
-                        roughness = 0.5f;
-                        ao        = 1.0f;
-                        break;
-                    case 3:  return uvGradient(uvW);
-                    case 4:  return hashColorFromInt(hit.materialIndex);
-                    case 5:  return baseColor;
-                    case 6:  return baseColor; // no textures in this kernel
-                    case 7:  return float3(1.0f);
-                    case 8:  return float3(roughness);
-                    case 9:  return float3(metallic);
-                    case 10: return normalToRGB(Ng);
-                    case 11: return normalToRGB(Ns);
-                    case 12: return float3(0.0f);
-                    case 13: return emissive;
-                    case 14: return float3(1.0f, roughness, metallic);
-                    case 15: return float3(0.0f);
-                    case 16: return float3(0.0f);
-                    default: break;
-                }
-            }
-            // --- UV DEBUG ---
-
-            // Ensure normals face the incoming ray
-            if (dot(Ng, ray.direction) > 0.0f) { Ng = -Ng; }
-            if (dot(Ns, ray.direction) > 0.0f) { Ns = -Ns; }
-
-            N = Ns;
-            float3 V = normalize(-ray.direction);
-
-            uint lightSeed = seedBase ^ (0x9E3779B9u * (uint(bounce) + 1u));
-
-            float3 ambient = baseColor * AMBIENT_STRENGTH * ao;
-            float3 direct  = computeLightingAtPoint(
-                                hitPos, N, Ng, baseColor,
-                                metallic, roughness, V,
-                                bvhNodes, triangles,
-                                nodeCount, rootIndex,
-                                lights, lightCount,
-                                lightSeed);
-
-            if (bounce == 0)
-            {
-                radiance += throughput * (ambient + direct + emissive);
-            }
-            else
-            {
-                radiance += throughput * (direct + emissive);
-            }
-
-            if (bounce >= 1)
-            {
-                float maxChannel = max(throughput.x, max(throughput.y, throughput.z));
-                maxChannel = clamp(maxChannel, 0.1f, 0.95f);
-
-                uint  seedRR = seedBase ^ (0x10000u * uint(bounce) ^ 0x10u);
-                float rr     = rand01(seedRR);
-
-                if (rr > maxChannel)
-                    break;
-
-                throughput /= maxChannel;
-            }
-
-            uint  seedU1 = seedBase ^ (0x10000u * uint(bounce) ^ 0x21u);
-            uint  seedU2 = seedBase ^ (0x10000u * uint(bounce) ^ 0x43u);
-            float u1 = rand01(seedU1);
-            float u2 = rand01(seedU2);
-
-            float3 newDir;
-
-            // --- BSDF sampling (diffuse + GGX specular) ---
-            float r = clamp(roughness, 0.02f, 0.98f);
-            float3 F0 = lerp3(float3(0.04f), baseColor, metallic);
-            float NdV = max(dot(N, V), 0.0f);
-            float3 Fv = fresnelSchlick(NdV, F0);
-
-            // Specular lobe probability (avoid 0/1 extremes for stability)
-            float specProb = clamp(max(F0.x, max(F0.y, F0.z)), 0.05f, 0.95f);
-            float diffProb = 1.0f - specProb;
-
-            uint  seedPick = seedBase ^ (0x10000u * uint(bounce) ^ 0x77u);
-            float pick = rand01(seedPick);
-
-            if (pick < specProb)
-            {
-                // GGX half-vector sampling
-                float alpha  = r * r;
-                float alpha2 = alpha * alpha;
-
-                float phi       = 2.0f * PI * u2;
-                float cosTheta  = sqrt((1.0f - u1) / (1.0f + (alpha2 - 1.0f) * u1));
-                float sinTheta  = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
-
-                float3 tangent, bitangent;
-                buildOrthonormalBasis(N, tangent, bitangent);
-
-                float3 H =
-                    tangent   * (sinTheta * cos(phi)) +
-                    bitangent * (sinTheta * sin(phi)) +
-                    N         * cosTheta;
-                H = normalize(H);
-
-                newDir = normalize(reflect(-V, H));
-
-                float NdL = dot(N, newDir);
-                if (NdL <= 0.0f)
-                    break;
-
-                float NdH = max(dot(N, H), 0.0f);
-                float HdV = max(dot(H, V), 0.0f);
-
-                // Geometry term (Schlick-Smith)
-                float k = (r + 1.0f);
-                k = (k * k) * 0.125f;
-
-                float G = geometrySmith(max(NdV, 0.0f), max(NdL, 0.0f), k);
-                float3 Fh = fresnelSchlick(HdV, F0);
-
-                // Weight for specular component sampling:
-                // w = (spec * NdL) / (specProb * pdf)
-                // With GGX VNDF approx, cancellation yields:
-                // w ≈ (G * F * HdV) / (specProb * NdV * NdH)
-                float denom = max(NdV * NdH, 1e-6f);
-                float3 wSpec = (G * Fh * HdV) / (specProb * denom);
-
-                throughput *= wSpec;
-            }
-            else
-            {
-                // Cosine-weighted diffuse sampling
-                float3 localDir = cosineSampleHemisphere(u1, u2);
-
-                float3 tangent, bitangent;
-                buildOrthonormalBasis(N, tangent, bitangent);
-
-                newDir =
-                    localDir.x * tangent +
-                    localDir.y * bitangent +
-                    localDir.z * N;
-                newDir = normalize(newDir);
-
-                float NdL = max(dot(N, newDir), 0.0f);
-                if (NdL <= 0.0f)
-                    break;
-
-                // Energy-conserving diffuse term (Lambert * kd)
-                float3 kd = (float3(1.0f) - Fv) * (1.0f - metallic);
-
-                // Component-sampling weight simplifies to: kd * baseColor / diffProb
-                throughput *= (kd * baseColor) / max(diffProb, 1e-6f);
-            }
-
-            ray.origin    = hitPos + newDir * EPSILON_POS;
-            ray.direction = newDir;
-        }
-
-        pixelColor += radiance;
-    }
-
-    pixelColor /= float(spp);
-    return pixelColor;
-}
-
 inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                      uint2                  imgSize,
                                                      const device BVHNode  *tlasNodes,
@@ -3071,67 +2780,6 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
 
 
 // ==================================================
-// KERNEL 1: вывод в буфер framebuffer
-// ==================================================
-kernel void RayTraceKernel(
-    const device BVHNode   *bvhNodes      [[buffer(0)]],
-    const device Triangle  *triangles     [[buffer(1)]],
-    constant uint          *nodeCountPtr  [[buffer(2)]],
-    constant int           *rootIndexPtr  [[buffer(3)]],
-    constant CameraData    *camPtr        [[buffer(4)]],
-    constant uint2         *imageSizePtr  [[buffer(5)]],
-    constant uint          *triCountPtr   [[buffer(6)]],
-    device packed_float3   *framebuffer   [[buffer(7)]],
-    const device LightGPU  *lights        [[buffer(8)]],
-    constant uint          *lightCountPtr [[buffer(9)]],
-    uint2                   gid           [[thread_position_in_grid]])
-{
-    uint2 imgSize = *imageSizePtr;
-    uint  w = imgSize.x;
-    uint  h = imgSize.y;
-
-    if (gid.x >= w || gid.y >= h)
-        return;
-
-    const uint pixelIndex = gid.y * w + gid.x;
-
-    uint nodeCount = *nodeCountPtr;
-    int  rootIndex = *rootIndexPtr;
-    CameraData cam = *camPtr;
-
-    if (nodeCount == 0u || rootIndex < 0 || rootIndex >= int(nodeCount))
-    {
-        framebuffer[pixelIndex] = packed_float3(0.0f, 0.0f, 0.0f);
-        return;
-    }
-
-    float3 camPos     = float3(cam.position);
-    float3 camForward = normalize(float3(cam.forward));
-    float3 camUp      = normalize(float3(cam.up));
-    float3 camRight   = normalize(float3(cam.right));
-
-    int spp = cam.samplesPerPixel;
-    if (spp <= 0) spp = 1;
-
-    uint lightCount = (lightCountPtr != nullptr) ? *lightCountPtr : 0u;
-
-    float3 linearColor = tracePathPixel(
-        gid, imgSize,
-        bvhNodes, triangles,
-        nodeCount, rootIndex,
-        camPos, camForward, camUp, camRight,
-        cam.fovY,
-        spp,
-        lights, lightCount,
-        0u
-    );
-
-    float3 c = filmicTonemap(linearColor, IMAGE_EXPOSURE);
-    framebuffer[pixelIndex] = packed_float3(c);
-}
-
-
-// ==================================================
 // Post-process params + helpers
 // ==================================================
 struct PostProcessParams
@@ -3245,32 +2893,6 @@ inline float3 filmicTonemapCustom(float3 c,
     return pow(x, float3(1.0f / 2.18f));
 }
 
-inline float tracePrimaryDepth(uint2 gid,
-                               uint2 imgSize,
-                               const device BVHNode  *tlasNodes,
-                               const device BVHNode  *meshNodes,
-                               const device Triangle *triangles,
-                               const device SceneInstanceGPU *instances,
-                               uint tlasNodeCount,
-                               uint meshNodeCount,
-                               uint instanceCount,
-                               int rootIndex,
-                               float3 camPos,
-                               float3 camForward,
-                               float3 camUp,
-                               float3 camRight,
-                               float fovY,
-                               float fallbackDepth)
-{
-    Ray primary = makePrimaryRayJittered(int(gid.x), int(gid.y),
-                                         int(imgSize.x), int(imgSize.y),
-                                         float2(0.0f),
-                                         camPos, camForward, camUp, camRight,
-                                         fovY);
-    HitInfo hit = traceRaySceneBVH(tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex, primary);
-    return hit.hit ? hit.t : fallbackDepth;
-}
-
 // ==================================================
 // KERNEL 2: path tracing -> HDR accumulation + first-hit guides
 // depth remains packed into hdr.a; albedo/normal are written to dedicated guide textures
@@ -3282,7 +2904,6 @@ kernel void RayTraceTextureKernel(
     constant int           *rootIndexPtr  [[buffer(3)]],
     constant CameraData    *camPtr        [[buffer(4)]],
     constant uint2         *imageSizePtr  [[buffer(5)]],
-    constant uint          *triCountPtr   [[buffer(6)]],
     const device LightGPU  *lights        [[buffer(7)]],
     constant uint          *lightCountPtr [[buffer(8)]],
     constant uint          *sampleCountPtr [[buffer(9)]],

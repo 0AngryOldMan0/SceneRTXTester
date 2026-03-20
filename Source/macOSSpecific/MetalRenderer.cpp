@@ -123,11 +123,6 @@ void MetalRenderer::cleanup()
     }
 }
 
-static inline std::size_t pixelCount(int w, int h)
-{
-    return static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
-}
-
 bool MetalRenderer::render(const Scene &scene,
                            const Camera &camera,
                            std::vector<Vec3> &framebuffer)
@@ -135,7 +130,7 @@ bool MetalRenderer::render(const Scene &scene,
     return renderTexture(scene, camera, framebuffer);
 }
 
-CameraDataCPU MetalRenderer::prepareCameraData(const Camera &camera, const Vec3 &lightPos) const
+CameraDataCPU MetalRenderer::prepareCameraData(const Camera &camera) const
 {
     CameraDataCPU camData;
     camData.position = camera.getPosition();
@@ -146,7 +141,6 @@ CameraDataCPU MetalRenderer::prepareCameraData(const Camera &camera, const Vec3 
     camData.width = imageWidth_;
     camData.height = imageHeight_;
     camData.samplesPerPixel = samplesPerPixel_;
-    (void)lightPos;
     camData.nearPlane = camera.getNearPlane();
     camData.farPlane = camera.getFarPlane();
     camData.focusDistance = camera.getFocusDistance();
@@ -171,14 +165,14 @@ bool MetalRenderer::renderTexture(const Scene &scene,
         return false;
     }
 
-    framebuffer.resize(pixelCount(imageWidth_, imageHeight_));
+    framebuffer.resize(static_cast<std::size_t>(imageWidth_) * static_cast<std::size_t>(imageHeight_));
 
     MonitoringFrameStats frameStats;
     frameStats.frameIndex = static_cast<int>(stats_.size());
 
     const auto frameStart = Clock::now();
 
-    const CameraDataCPU camData = prepareCameraData(camera, scene.getMainLight().position);
+    const CameraDataCPU camData = prepareCameraData(camera);
 
     const bool success = RenderFrameMetalTexture(scene.getGlobalNodes(),
                                                  scene.getGlobalMeshNodes(),

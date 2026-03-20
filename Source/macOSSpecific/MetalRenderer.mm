@@ -63,7 +63,6 @@ namespace
 {
     id<MTLDevice>               g_device          = nil;
     id<MTLCommandQueue>         g_queue           = nil;
-    id<MTLComputePipelineState> g_pipelineBuffer       = nil;
     id<MTLComputePipelineState> g_pipelineTexture      = nil;
     id<MTLComputePipelineState> g_pipelineBloomExtract = nil;
     id<MTLComputePipelineState> g_pipelineBloomBlurH   = nil;
@@ -106,7 +105,6 @@ namespace
     id<MTLBuffer>               g_instanceBuffer              = nil;
     id<MTLBuffer>               g_nodeCountBuffer             = nil;
     id<MTLBuffer>               g_rootIndexBuffer             = nil;
-    id<MTLBuffer>               g_triCountBuffer              = nil;
     id<MTLBuffer>               g_meshNodeCountBuffer         = nil;
     id<MTLBuffer>               g_instanceCountBuffer         = nil;
     id<MTLBuffer>               g_lightBuffer                 = nil;
@@ -157,19 +155,6 @@ namespace
         double totalMs = 0.0;
     };
 
-    struct BufferFrameProfile
-    {
-        uint64_t callIndex = 0;
-        double geometryBuffersMs = 0.0;
-        double framebufferBufferMs = 0.0;
-        double lightUploadMs = 0.0;
-        double encodeMs = 0.0;
-        double waitMs = 0.0;
-        double readbackMs = 0.0;
-        double gpuMs = 0.0;
-        double totalMs = 0.0;
-    };
-
     struct TextureProfileTotals
     {
         uint64_t frameCount = 0;
@@ -195,23 +180,8 @@ namespace
         double totalMs = 0.0;
     };
 
-    struct BufferProfileTotals
-    {
-        uint64_t frameCount = 0;
-        double geometryBuffersMs = 0.0;
-        double framebufferBufferMs = 0.0;
-        double lightUploadMs = 0.0;
-        double encodeMs = 0.0;
-        double waitMs = 0.0;
-        double readbackMs = 0.0;
-        double gpuMs = 0.0;
-        double totalMs = 0.0;
-    };
-
     uint64_t g_textureProfileCallIndex = 0;
-    uint64_t g_bufferProfileCallIndex = 0;
     TextureProfileTotals g_textureProfileTotals;
-    BufferProfileTotals g_bufferProfileTotals;
 
     static double ToMilliseconds(ProfileClock::duration duration)
     {
@@ -612,47 +582,6 @@ namespace
         AppendProfileText(oss.str());
     }
 
-    static void PrintBufferFrameProfile(const BufferFrameProfile &p)
-    {
-        auto &tot = g_bufferProfileTotals;
-        tot.frameCount += 1;
-        tot.geometryBuffersMs += p.geometryBuffersMs;
-        tot.framebufferBufferMs += p.framebufferBufferMs;
-        tot.lightUploadMs += p.lightUploadMs;
-        tot.encodeMs += p.encodeMs;
-        tot.waitMs += p.waitMs;
-        tot.readbackMs += p.readbackMs;
-        tot.gpuMs += p.gpuMs;
-        tot.totalMs += p.totalMs;
-
-        const double inv = (tot.frameCount > 0) ? (1.0 / static_cast<double>(tot.frameCount)) : 0.0;
-        const double avgTotal = tot.totalMs * inv;
-        const double avgWait = tot.waitMs * inv;
-        const double avgReadback = tot.readbackMs * inv;
-        const double avgGPU = tot.gpuMs * inv;
-
-        std::ostringstream oss;
-        oss << "[MetalProfiler][Buffer] call=" << p.callIndex << "\n"
-            << "  current:\n";
-
-        AppendProfileLine(oss, "geom", p.geometryBuffersMs, p.totalMs);
-        AppendProfileLine(oss, "fb", p.framebufferBufferMs, p.totalMs);
-        AppendProfileLine(oss, "lights", p.lightUploadMs, p.totalMs);
-        AppendProfileLine(oss, "encode", p.encodeMs, p.totalMs);
-        AppendProfileLine(oss, "wait", p.waitMs, p.totalMs);
-        AppendProfileLine(oss, "readback", p.readbackMs, p.totalMs);
-        AppendProfileLine(oss, "gpu", p.gpuMs, p.totalMs);
-        AppendProfileLine(oss, "total", p.totalMs, p.totalMs);
-
-        oss << "  average:\n";
-        AppendProfileLine(oss, "avgTotal", avgTotal, avgTotal);
-        AppendProfileLine(oss, "avgWait", avgWait, avgTotal);
-        AppendProfileLine(oss, "avgReadback", avgReadback, avgTotal);
-        AppendProfileLine(oss, "avgGPU", avgGPU, avgTotal);
-        oss << std::endl;
-
-        AppendProfileText(oss.str());
-    }
 }
 
 struct LightGPU
@@ -1488,7 +1417,6 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
         !g_instanceBuffer ||
         !g_nodeCountBuffer ||
         !g_rootIndexBuffer ||
-        !g_triCountBuffer ||
         !g_meshNodeCountBuffer ||
         !g_instanceCountBuffer ||
         !g_lightBuffer ||
@@ -1514,12 +1442,10 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
     }
 
     const uint32_t nodeCount = static_cast<uint32_t>(tlasNodes.size());
-    const uint32_t triCount = static_cast<uint32_t>(tris.size());
     const uint32_t meshNodeCount = static_cast<uint32_t>(meshNodes.size());
     const uint32_t instanceCount = static_cast<uint32_t>(instances.size());
     if (!UploadSharedValue(g_device, g_nodeCountBuffer, nodeCount) ||
         !UploadSharedValue(g_device, g_rootIndexBuffer, rootIndex) ||
-        !UploadSharedValue(g_device, g_triCountBuffer, triCount) ||
         !UploadSharedValue(g_device, g_meshNodeCountBuffer, meshNodeCount) ||
         !UploadSharedValue(g_device, g_instanceCountBuffer, instanceCount))
     {
@@ -1728,23 +1654,6 @@ bool InitMetalRenderer()
             return false;
         }
 
-        id<MTLFunction> funcBuf = [lib newFunctionWithName:@"RayTraceKernel"];
-        if (!funcBuf)
-        {
-            std::cerr << "Metal: function not found in metallib: RayTraceKernel" << std::endl;
-            return false;
-        }
-        error = nil;
-        g_pipelineBuffer = [g_device newComputePipelineStateWithFunction:funcBuf error:&error];
-
-        if (!g_pipelineBuffer || error)
-        {
-            std::cerr << "Metal: не удалось создать compute pipeline state (RayTraceKernel)\n";
-            if (error)
-                std::cerr << [[error localizedDescription] UTF8String] << std::endl;
-            return false;
-        }
-
         id<MTLFunction> funcTex = [lib newFunctionWithName:@"RayTraceTextureKernel"];
         if (!funcTex)
         {
@@ -1790,175 +1699,6 @@ bool InitMetalRenderer()
         if (!g_pipelineBloomExtract || !g_pipelineBloomBlurH || !g_pipelineBloomBlurV || !g_pipelinePostProcess)
             return false;
 
-        return true;
-    }
-}
-
-bool RenderFrameMetal(const std::vector<BVHNode>  &nodes,
-                      const std::vector<Triangle> &tris,
-                      const std::vector<Light>    &lights,
-                      int                          rootIndex,
-                      const CameraDataCPU         &cameraCPU,
-                      std::vector<Vec3>           &framebuffer)
-{
-    if (!g_device || !g_queue || !g_pipelineBuffer)
-    {
-        std::cerr << "MetalRenderer: не инициализирован (вызови InitMetalRenderer())\n";
-        return false;
-    }
-
-    const int width  = cameraCPU.width;
-    const int height = cameraCPU.height;
-    if (width <= 0 || height <= 0)
-        return false;
-
-    framebuffer.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
-
-    BufferFrameProfile profile{};
-    profile.callIndex = ++g_bufferProfileCallIndex;
-    const auto totalStart = ProfileClock::now();
-
-    @autoreleasepool
-    {
-        const auto geometryStart = ProfileClock::now();
-
-        // ----------------- буферы геометрии -----------------
-        const std::size_t bvhSize = nodes.size() * sizeof(BVHNode);
-        id<MTLBuffer> bvhBuffer =
-            [g_device newBufferWithBytes:nodes.data()
-                                  length:bvhSize
-                                 options:MTLResourceStorageModeShared];
-        if (!bvhBuffer)
-        {
-            std::cerr << "Metal: не удалось создать буфер для BVH\n";
-            return false;
-        }
-
-        const std::size_t triSize = tris.size() * sizeof(Triangle);
-        id<MTLBuffer> triBuffer =
-            [g_device newBufferWithBytes:tris.data()
-                                  length:triSize
-                                 options:MTLResourceStorageModeShared];
-        if (!triBuffer)
-        {
-            std::cerr << "Metal: не удалось создать буфер для треугольников\n";
-            return false;
-        }
-        profile.geometryBuffersMs = ToMilliseconds(ProfileClock::now() - geometryStart);
-
-        // ----------------- буфер кадра -----------------
-        const auto fbBufferStart = ProfileClock::now();
-        const std::size_t fbSize = framebuffer.size() * sizeof(Vec3);
-        id<MTLBuffer> fbBuffer =
-            [g_device newBufferWithLength:fbSize
-                                  options:MTLResourceStorageModeShared];
-        if (!fbBuffer)
-        {
-            std::cerr << "Metal: не удалось создать буфер кадра\n";
-            return false;
-        }
-        profile.framebufferBufferMs = ToMilliseconds(ProfileClock::now() - fbBufferStart);
-
-        // ----------------- мелкие константы -----------------
-        uint32_t triCount  = static_cast<uint32_t>(tris.size());
-        uint32_t nodeCount = static_cast<uint32_t>(nodes.size());
-        int      rootIdx   = rootIndex;
-        CameraDataCPU camCopy = cameraCPU;
-        uint32_t imageSize[2] = {
-            static_cast<uint32_t>(width),
-            static_cast<uint32_t>(height)
-        };
-
-        // ----------------- буфер источников света -----------------
-        const auto lightStart = ProfileClock::now();
-        std::vector<LightGPU> gpuLights;
-        gpuLights.reserve(lights.size());
-
-        for (const Light &src : lights)
-        {
-            LightGPU dst{};
-            dst.type      = static_cast<int>(src.type);
-            dst._pad0     = 0;
-            dst.position  = src.position;
-            dst.direction = src.direction;
-            dst.color     = src.color;
-            dst.intensity = src.intensity;
-            dst.radius    = src.radius;
-            dst.spotSize  = src.spotSize;
-            dst.spotBlend = src.spotBlend;
-            dst.attenuationRadius = src.attenuationRadius;
-
-            gpuLights.push_back(dst);
-        }
-
-        id<MTLBuffer> lightBuffer = nil;
-        uint32_t      lightCount  = static_cast<uint32_t>(gpuLights.size());
-
-        if (!gpuLights.empty())
-        {
-            lightBuffer =
-                [g_device newBufferWithBytes:gpuLights.data()
-                                      length:gpuLights.size() * sizeof(LightGPU)
-                                     options:MTLResourceStorageModeShared];
-        }
-        profile.lightUploadMs = ToMilliseconds(ProfileClock::now() - lightStart);
-
-        // ----------------- командный буфер + encoder -----------------
-        const auto encodeStart = ProfileClock::now();
-        id<MTLCommandBuffer>         cmd = [g_queue commandBuffer];
-        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-
-        [enc setComputePipelineState:g_pipelineBuffer];
-        [enc setBuffer:bvhBuffer offset:0 atIndex:0];
-        [enc setBuffer:triBuffer offset:0 atIndex:1];
-        [enc setBytes:&nodeCount length:sizeof(uint32_t)      atIndex:2];
-        [enc setBytes:&rootIdx   length:sizeof(int)           atIndex:3];
-        [enc setBytes:&camCopy   length:sizeof(CameraDataCPU) atIndex:4];
-        [enc setBytes:&imageSize length:sizeof(imageSize)     atIndex:5];
-        [enc setBytes:&triCount  length:sizeof(uint32_t)      atIndex:6];
-        [enc setBuffer:fbBuffer  offset:0                     atIndex:7];
-
-        if (lightBuffer)
-            [enc setBuffer:lightBuffer offset:0 atIndex:8];
-        [enc setBytes:&lightCount length:sizeof(uint32_t)     atIndex:9];
-
-        MTLSize gridSize = MTLSizeMake(width, height, 1);
-
-        NSUInteger tgWidth  = 8;
-        NSUInteger tgHeight = 8;
-        NSUInteger maxThreads = g_pipelineBuffer.maxTotalThreadsPerThreadgroup;
-        if (tgWidth * tgHeight > maxThreads)
-        {
-            tgWidth  = maxThreads;
-            tgHeight = 1;
-        }
-
-        MTLSize threadsPerGroup = MTLSizeMake(tgWidth, tgHeight, 1);
-
-        [enc dispatchThreads:gridSize threadsPerThreadgroup:threadsPerGroup];
-        [enc endEncoding];
-        [cmd commit];
-        profile.encodeMs = ToMilliseconds(ProfileClock::now() - encodeStart);
-
-        const auto waitStart = ProfileClock::now();
-        [cmd waitUntilCompleted];
-        profile.waitMs = ToMilliseconds(ProfileClock::now() - waitStart);
-        profile.gpuMs = SafeGpuTimeMs(cmd);
-
-        // ----------------- копируем результат обратно -----------------
-        const auto readbackStart = ProfileClock::now();
-        float *fbPtr = reinterpret_cast<float *>([fbBuffer contents]);
-        const std::size_t pixelCount = framebuffer.size();
-        for (std::size_t i = 0; i < pixelCount; ++i)
-        {
-            framebuffer[i].x = fbPtr[i * 3 + 0];
-            framebuffer[i].y = fbPtr[i * 3 + 1];
-            framebuffer[i].z = fbPtr[i * 3 + 2];
-        }
-        profile.readbackMs = ToMilliseconds(ProfileClock::now() - readbackStart);
-        profile.totalMs = ToMilliseconds(ProfileClock::now() - totalStart);
-
-        PrintBufferFrameProfile(profile);
         return true;
     }
 }
@@ -2133,7 +1873,6 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             [enc setBuffer:g_rootIndexBuffer           offset:0 atIndex:3];
             [enc setBuffer:g_camBuffer                 offset:0 atIndex:4];
             [enc setBuffer:g_imgSizeBuffer             offset:0 atIndex:5];
-            [enc setBuffer:g_triCountBuffer            offset:0 atIndex:6];
             [enc setBuffer:g_lightBuffer               offset:0 atIndex:7];
             [enc setBuffer:g_lightCountBuffer          offset:0 atIndex:8];
             [enc setBuffer:g_sampleCountBuffer         offset:0 atIndex:9];
