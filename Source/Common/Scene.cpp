@@ -171,6 +171,7 @@ Scene::Scene() : bvhBuilder_(BVHBuilder::Strategy::BottomUp)
 
 void Scene::invalidateGlobalBVH_()
 {
+    ++sceneRevision_;
     globalBVHBuilt_ = false;
     globalNodes_.clear();
     globalMeshNodes_.clear();
@@ -477,11 +478,13 @@ Scene::SceneStats Scene::getStats() const
 void Scene::addLight(const Light &light)
 {
     lights_.push_back(light);
+    ++sceneRevision_;
 }
 
 void Scene::clearLights()
 {
     lights_.clear();
+    ++sceneRevision_;
 }
 
 const Light &Scene::getMainLight() const

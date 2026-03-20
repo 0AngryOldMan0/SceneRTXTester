@@ -12,11 +12,13 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <array>
 #include <filesystem>
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <fstream>
@@ -70,6 +72,12 @@ namespace
     // Накопительная текстура + счётчик кадров для прогрессивного рендера
     id<MTLTexture>              g_accumTexture    = nil;
     uint32_t                    g_frameIndex      = 0;
+    id<MTLTexture>              g_hdrTexture      = nil;
+    id<MTLTexture>              g_bloomTextureA   = nil;
+    id<MTLTexture>              g_bloomTextureB   = nil;
+    id<MTLTexture>              g_outTexture      = nil;
+    int                         g_postTextureWidth = 0;
+    int                         g_postTextureHeight = 0;
 
     // --- НОВОЕ: ресурсы материалов/текстур ---
     constexpr uint32_t          kMaxAllTextures = 126;
@@ -83,6 +91,30 @@ namespace
     id<MTLBuffer>               g_materialPBRBuffer      = nil;   // подготовка под расширенный MaterialGPU (пока не используется шейдером)
     id<MTLBuffer>               g_materialPBRCountBuffer = nil;
     std::vector<uint8_t>        g_linearTextureValid; // 1 если текстура реально загрузилась
+    const SceneMetaResources   *g_loadedMetaRes         = nullptr;
+
+    id<MTLBuffer>               g_tlasBuffer                  = nil;
+    id<MTLBuffer>               g_triBuffer                   = nil;
+    id<MTLBuffer>               g_meshNodeBuffer              = nil;
+    id<MTLBuffer>               g_instanceBuffer              = nil;
+    id<MTLBuffer>               g_nodeCountBuffer             = nil;
+    id<MTLBuffer>               g_rootIndexBuffer             = nil;
+    id<MTLBuffer>               g_triCountBuffer              = nil;
+    id<MTLBuffer>               g_meshNodeCountBuffer         = nil;
+    id<MTLBuffer>               g_instanceCountBuffer         = nil;
+    id<MTLBuffer>               g_lightBuffer                 = nil;
+    id<MTLBuffer>               g_lightCountBuffer            = nil;
+    id<MTLBuffer>               g_emissiveTriangleBuffer      = nil;
+    id<MTLBuffer>               g_emissiveTriangleCountBuffer = nil;
+    id<MTLBuffer>               g_decalBuffer                 = nil;
+    id<MTLBuffer>               g_decalCountBuffer            = nil;
+    id<MTLBuffer>               g_camBuffer                   = nil;
+    id<MTLBuffer>               g_imgSizeBuffer               = nil;
+    id<MTLBuffer>               g_frameIndexBuffer            = nil;
+    id<MTLBuffer>               g_postProcessBuffer           = nil;
+
+    std::uint64_t               g_cachedSceneRevision         = 0;
+    const SceneMetaResources   *g_cachedDecalMetaRes          = nullptr;
 
     using ProfileClock = std::chrono::steady_clock;
 
@@ -237,6 +269,50 @@ namespace
         catch (...)
         {
         }
+    }
+
+    static bool EnsureSharedBufferLength(id<MTLDevice> dev,
+                                         id<MTLBuffer> &buffer,
+                                         std::size_t requiredBytes)
+    {
+        if (!dev)
+            return false;
+
+        const NSUInteger targetBytes =
+            static_cast<NSUInteger>(std::max<std::size_t>(requiredBytes, 1u));
+        if (!buffer || [buffer length] < targetBytes)
+            buffer = [dev newBufferWithLength:targetBytes options:MTLResourceStorageModeShared];
+
+        return buffer != nil;
+    }
+
+    template <typename T>
+    static bool UploadSharedValue(id<MTLDevice> dev,
+                                  id<MTLBuffer> &buffer,
+                                  const T &value)
+    {
+        if (!EnsureSharedBufferLength(dev, buffer, sizeof(T)))
+            return false;
+
+        std::memcpy([buffer contents], &value, sizeof(T));
+        return true;
+    }
+
+    template <typename T>
+    static bool UploadSharedVector(id<MTLDevice> dev,
+                                   id<MTLBuffer> &buffer,
+                                   const std::vector<T> &values,
+                                   const T &fallback)
+    {
+        const T *src = values.empty() ? &fallback : values.data();
+        const std::size_t bytes = values.empty()
+                                ? sizeof(T)
+                                : values.size() * sizeof(T);
+        if (!EnsureSharedBufferLength(dev, buffer, bytes))
+            return false;
+
+        std::memcpy([buffer contents], src, bytes);
+        return true;
     }
 
     static void PrintTextureFrameProfile(const TextureFrameProfile &p)
@@ -696,11 +772,28 @@ static id<MTLTexture> LoadTextureBGRA8_Unorm(id<MTLDevice> dev, const std::strin
 
 static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
 {
-    if (!metaRes)
-        return true; // ничего не делаем
-
     if (!g_device)
         return false;
+
+    if (!metaRes)
+    {
+        if (g_loadedMetaRes != nullptr)
+        {
+            ResetMetalAccumulation();
+            g_loadedMetaRes = nullptr;
+            g_cachedDecalMetaRes = nullptr;
+            g_baseColorTextures.clear();
+            g_baseColorTexturePaths.clear();
+            g_linearTextureValid.clear();
+            g_materialBuffer = nil;
+            g_materialCountBuffer = nil;
+            g_materialPBRBuffer = nil;
+            g_materialPBRCountBuffer = nil;
+            g_decalBuffer = nil;
+            g_decalCountBuffer = nil;
+        }
+        return true;
+    }
 
     // ------------------------------------------------------------
     // Важно:
@@ -733,7 +826,8 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
     combinedPaths.insert(combinedPaths.end(), linFull.begin(),  linFull.begin() + linCount);
 
     // Если набор путей не изменился — оставляем как есть
-    const bool same = (combinedPaths == g_baseColorTexturePaths);
+    const bool same = (metaRes == g_loadedMetaRes) &&
+                      (combinedPaths == g_baseColorTexturePaths);
     if (same && g_materialBuffer != nil && g_materialCountBuffer != nil)
         return true;
 
@@ -748,6 +842,9 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
     g_materialCountBuffer     = nil;
     g_materialPBRBuffer       = nil;
     g_materialPBRCountBuffer  = nil;
+    g_cachedDecalMetaRes      = nullptr;
+    g_decalBuffer             = nil;
+    g_decalCountBuffer        = nil;
 
     g_baseColorTextures.reserve(baseCount + linCount);
     g_baseColorTexturePaths = combinedPaths;
@@ -929,6 +1026,7 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
               << ", materialsPBR = " << materialPBRCountU32
               << "\n";
 
+    g_loadedMetaRes = metaRes;
     return (g_materialBuffer != nil && g_materialCountBuffer != nil);
 }
 
@@ -1043,6 +1141,45 @@ static id<MTLTexture> CreateRGBA32FloatTexture(id<MTLDevice> dev,
     return [dev newTextureWithDescriptor:desc];
 }
 
+static bool EnsurePostProcessTextures(int width, int height)
+{
+    if (!g_device || width <= 0 || height <= 0)
+        return false;
+
+    const bool sizeMatches =
+        g_hdrTexture &&
+        g_bloomTextureA &&
+        g_bloomTextureB &&
+        g_outTexture &&
+        g_postTextureWidth == width &&
+        g_postTextureHeight == height;
+    if (sizeMatches)
+        return true;
+
+    g_hdrTexture = CreateRGBA32FloatTexture(g_device,
+                                            width,
+                                            height,
+                                            MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    g_bloomTextureA = CreateRGBA32FloatTexture(g_device,
+                                               width,
+                                               height,
+                                               MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    g_bloomTextureB = CreateRGBA32FloatTexture(g_device,
+                                               width,
+                                               height,
+                                               MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    g_outTexture = CreateRGBA32FloatTexture(g_device,
+                                            width,
+                                            height,
+                                            MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    if (!g_hdrTexture || !g_bloomTextureA || !g_bloomTextureB || !g_outTexture)
+        return false;
+
+    g_postTextureWidth = width;
+    g_postTextureHeight = height;
+    return true;
+}
+
 
 static std::vector<DecalGPU> BuildDecalTable(const SceneMetaResources *metaRes)
 {
@@ -1113,6 +1250,132 @@ static std::vector<DecalGPU> BuildDecalTable(const SceneMetaResources *metaRes)
     }
 
     return out;
+}
+
+static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
+                                       const std::vector<BVHNode> &meshNodes,
+                                       const std::vector<Triangle> &tris,
+                                       const std::vector<SceneInstanceGPU> &instances,
+                                       const std::vector<Light> &lights,
+                                       std::uint64_t sceneRevision,
+                                       int rootIndex,
+                                       TextureFrameProfile &profile)
+{
+    const bool sceneChanged =
+        (g_cachedSceneRevision != sceneRevision) ||
+        !g_tlasBuffer ||
+        !g_triBuffer ||
+        !g_meshNodeBuffer ||
+        !g_instanceBuffer ||
+        !g_nodeCountBuffer ||
+        !g_rootIndexBuffer ||
+        !g_triCountBuffer ||
+        !g_meshNodeCountBuffer ||
+        !g_instanceCountBuffer ||
+        !g_lightBuffer ||
+        !g_lightCountBuffer ||
+        !g_emissiveTriangleBuffer ||
+        !g_emissiveTriangleCountBuffer;
+
+    if (!sceneChanged)
+        return true;
+
+    const auto geomStart = ProfileClock::now();
+    const BVHNode dummyNode{};
+    const Triangle dummyTriangle{};
+    const SceneInstanceGPU dummyInstance{};
+
+    if (!UploadSharedVector(g_device, g_tlasBuffer, tlasNodes, dummyNode) ||
+        !UploadSharedVector(g_device, g_triBuffer, tris, dummyTriangle) ||
+        !UploadSharedVector(g_device, g_meshNodeBuffer, meshNodes, dummyNode) ||
+        !UploadSharedVector(g_device, g_instanceBuffer, instances, dummyInstance))
+    {
+        std::cerr << "Metal: не удалось создать persistent буферы геометрии (texture)\n";
+        return false;
+    }
+
+    const uint32_t nodeCount = static_cast<uint32_t>(tlasNodes.size());
+    const uint32_t triCount = static_cast<uint32_t>(tris.size());
+    const uint32_t meshNodeCount = static_cast<uint32_t>(meshNodes.size());
+    const uint32_t instanceCount = static_cast<uint32_t>(instances.size());
+    if (!UploadSharedValue(g_device, g_nodeCountBuffer, nodeCount) ||
+        !UploadSharedValue(g_device, g_rootIndexBuffer, rootIndex) ||
+        !UploadSharedValue(g_device, g_triCountBuffer, triCount) ||
+        !UploadSharedValue(g_device, g_meshNodeCountBuffer, meshNodeCount) ||
+        !UploadSharedValue(g_device, g_instanceCountBuffer, instanceCount))
+    {
+        std::cerr << "Metal: не удалось создать persistent small geometry buffers\n";
+        return false;
+    }
+    profile.geometryBuffersMs = ToMilliseconds(ProfileClock::now() - geomStart);
+
+    const auto lightStart = ProfileClock::now();
+    std::vector<LightGPU> gpuLights;
+    gpuLights.reserve(lights.size());
+    for (const Light &src : lights)
+    {
+        LightGPU dst{};
+        dst.type      = static_cast<int>(src.type);
+        dst._pad0     = 0;
+        dst.position  = src.position;
+        dst.direction = src.direction;
+        dst.color     = src.color;
+        dst.intensity = src.intensity;
+        dst.radius    = src.radius;
+        dst.spotSize  = src.spotSize;
+        dst.spotBlend = src.spotBlend;
+        dst.attenuationRadius = src.attenuationRadius;
+        gpuLights.push_back(dst);
+    }
+
+    const LightGPU dummyLight{};
+    const uint32_t lightCount = static_cast<uint32_t>(gpuLights.size());
+    if (!UploadSharedVector(g_device, g_lightBuffer, gpuLights, dummyLight) ||
+        !UploadSharedValue(g_device, g_lightCountBuffer, lightCount))
+    {
+        std::cerr << "Metal: не удалось создать persistent light buffers\n";
+        return false;
+    }
+    profile.lightUploadMs = ToMilliseconds(ProfileClock::now() - lightStart);
+
+    const auto emissiveStart = ProfileClock::now();
+    const std::vector<EmissiveTriangleGPUCPU> emissiveTrianglesCPU =
+        BuildEmissiveTriangleTable(tris, instances);
+    const EmissiveTriangleGPUCPU dummyEmissive{};
+    const uint32_t emissiveTriangleCount =
+        static_cast<uint32_t>(emissiveTrianglesCPU.size());
+    if (!UploadSharedVector(g_device, g_emissiveTriangleBuffer, emissiveTrianglesCPU, dummyEmissive) ||
+        !UploadSharedValue(g_device, g_emissiveTriangleCountBuffer, emissiveTriangleCount))
+    {
+        std::cerr << "Metal: не удалось создать persistent emissive buffers\n";
+        return false;
+    }
+    profile.emissiveDecalMs = ToMilliseconds(ProfileClock::now() - emissiveStart);
+
+    g_cachedSceneRevision = sceneRevision;
+    return true;
+}
+
+static bool EnsureDecalBufferUploaded(const SceneMetaResources *metaRes,
+                                      TextureFrameProfile &profile)
+{
+    if (g_cachedDecalMetaRes == metaRes && g_decalBuffer && g_decalCountBuffer)
+        return true;
+
+    const auto decalStart = ProfileClock::now();
+    const std::vector<DecalGPU> decalsCPU = BuildDecalTable(metaRes);
+    const DecalGPU dummyDecal{};
+    const uint32_t decalCount = static_cast<uint32_t>(decalsCPU.size());
+    if (!UploadSharedVector(g_device, g_decalBuffer, decalsCPU, dummyDecal) ||
+        !UploadSharedValue(g_device, g_decalCountBuffer, decalCount))
+    {
+        std::cerr << "Metal: не удалось создать persistent decal buffers\n";
+        return false;
+    }
+
+    profile.emissiveDecalMs += ToMilliseconds(ProfileClock::now() - decalStart);
+    g_cachedDecalMetaRes = metaRes;
+    return true;
 }
 
 static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *metaRes,
@@ -1485,6 +1748,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
                              const std::vector<Triangle> &tris,
                              const std::vector<SceneInstanceGPU> &instances,
                              const std::vector<Light>    &lights,
+                             std::uint64_t                sceneRevision,
                              int                          rootIndex,
                              const CameraDataCPU         &cameraCPU,
                              const SceneMetaResources    *metaRes,
@@ -1539,173 +1803,26 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         profile.accumTextureMs = ToMilliseconds(ProfileClock::now() - accumStart);
 
         const auto interTexStart = ProfileClock::now();
-        id<MTLTexture> hdrTexture = CreateRGBA32FloatTexture(g_device,
-                                                             width,
-                                                             height,
-                                                             MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-        id<MTLTexture> bloomTextureA = CreateRGBA32FloatTexture(g_device,
-                                                                width,
-                                                                height,
-                                                                MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-        id<MTLTexture> bloomTextureB = CreateRGBA32FloatTexture(g_device,
-                                                                width,
-                                                                height,
-                                                                MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-        id<MTLTexture> outTexture = CreateRGBA32FloatTexture(g_device,
-                                                             width,
-                                                             height,
-                                                             MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
-        if (!hdrTexture || !bloomTextureA || !bloomTextureB || !outTexture)
+        if (!EnsurePostProcessTextures(width, height))
         {
             std::cerr << "Metal: не удалось создать post-process textures\n";
             return false;
         }
         profile.intermediateTexturesMs = ToMilliseconds(ProfileClock::now() - interTexStart);
 
-        const auto geomStart = ProfileClock::now();
-        const std::size_t tlasSize = tlasNodes.size() * sizeof(BVHNode);
-        id<MTLBuffer> bvhBuffer =
-            [g_device newBufferWithBytes:tlasNodes.data()
-                                  length:tlasSize
-                                 options:MTLResourceStorageModeShared];
-
-        const std::size_t triSize = tris.size() * sizeof(Triangle);
-        id<MTLBuffer> triBuffer =
-            [g_device newBufferWithBytes:tris.data()
-                                  length:triSize
-                                 options:MTLResourceStorageModeShared];
-
-        const std::size_t meshNodeSize = meshNodes.size() * sizeof(BVHNode);
-        id<MTLBuffer> meshNodeBuffer =
-            [g_device newBufferWithBytes:meshNodes.data()
-                                  length:meshNodeSize
-                                 options:MTLResourceStorageModeShared];
-
-        SceneInstanceGPU dummyInstance{};
-        const std::size_t instanceSize = instances.size() * sizeof(SceneInstanceGPU);
-        id<MTLBuffer> instanceBuffer =
-            [g_device newBufferWithBytes:(instances.empty() ? &dummyInstance : instances.data())
-                                  length:(instances.empty() ? sizeof(SceneInstanceGPU) : instanceSize)
-                                 options:MTLResourceStorageModeShared];
-
-        if (!bvhBuffer || !triBuffer || !meshNodeBuffer || !instanceBuffer)
+        if (!EnsureSceneBuffersUploaded(tlasNodes,
+                                        meshNodes,
+                                        tris,
+                                        instances,
+                                        lights,
+                                        sceneRevision,
+                                        rootIndex,
+                                        profile))
         {
-            std::cerr << "Metal: не удалось создать буферы геометрии (texture)\n";
             return false;
         }
-        profile.geometryBuffersMs = ToMilliseconds(ProfileClock::now() - geomStart);
 
-        uint32_t nodeCount = static_cast<uint32_t>(tlasNodes.size());
-        uint32_t triCount  = static_cast<uint32_t>(tris.size());
-        uint32_t meshNodeCount = static_cast<uint32_t>(meshNodes.size());
-        uint32_t instanceCount = static_cast<uint32_t>(instances.size());
-        uint32_t imageSize[2] = {
-            static_cast<uint32_t>(width),
-            static_cast<uint32_t>(height)
-        };
-
-        const auto smallStart = ProfileClock::now();
-        id<MTLBuffer> nodeCountBuffer =
-            [g_device newBufferWithBytes:&nodeCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-
-        id<MTLBuffer> rootIndexBuffer =
-            [g_device newBufferWithBytes:&rootIndex
-                                  length:sizeof(int)
-                                 options:MTLResourceStorageModeShared];
-
-        id<MTLBuffer> camBuffer =
-            [g_device newBufferWithBytes:&cameraCPU
-                                  length:sizeof(CameraDataCPU)
-                                 options:MTLResourceStorageModeShared];
-
-        id<MTLBuffer> imgSizeBuffer =
-            [g_device newBufferWithBytes:imageSize
-                                  length:sizeof(imageSize)
-                                 options:MTLResourceStorageModeShared];
-
-        id<MTLBuffer> triCountBuffer =
-            [g_device newBufferWithBytes:&triCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-
-        id<MTLBuffer> meshNodeCountBuffer =
-            [g_device newBufferWithBytes:&meshNodeCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-
-        id<MTLBuffer> instanceCountBuffer =
-            [g_device newBufferWithBytes:&instanceCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-        profile.smallBuffersMs = ToMilliseconds(ProfileClock::now() - smallStart);
-
-        const auto lightStart = ProfileClock::now();
-        std::vector<LightGPU> gpuLights;
-        gpuLights.reserve(lights.size());
-        for (const Light &src : lights)
-        {
-            LightGPU dst{};
-            dst.type      = static_cast<int>(src.type);
-            dst._pad0     = 0;
-            dst.position  = src.position;
-            dst.direction = src.direction;
-            dst.color     = src.color;
-            dst.intensity = src.intensity;
-            dst.radius    = src.radius;
-            dst.spotSize  = src.spotSize;
-            dst.spotBlend = src.spotBlend;
-            dst.attenuationRadius = src.attenuationRadius;
-            gpuLights.push_back(dst);
-        }
-
-        id<MTLBuffer> lightBuffer = nil;
-        uint32_t lightCount = static_cast<uint32_t>(gpuLights.size());
-        if (!gpuLights.empty())
-        {
-            lightBuffer = [g_device newBufferWithBytes:gpuLights.data()
-                                                length:gpuLights.size() * sizeof(LightGPU)
-                                               options:MTLResourceStorageModeShared];
-        }
-
-        id<MTLBuffer> lightCountBuffer =
-            [g_device newBufferWithBytes:&lightCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-
-        uint32_t frameIndex = g_frameIndex;
-        id<MTLBuffer> frameIndexBuffer =
-            [g_device newBufferWithBytes:&frameIndex
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-        profile.lightUploadMs = ToMilliseconds(ProfileClock::now() - lightStart);
-
-        const auto emissiveDecalStart = ProfileClock::now();
-        const std::vector<EmissiveTriangleGPUCPU> emissiveTrianglesCPU = BuildEmissiveTriangleTable(tris, instances);
-        EmissiveTriangleGPUCPU dummyEmissive{};
-        id<MTLBuffer> emissiveTriangleBuffer = [g_device newBufferWithBytes:(emissiveTrianglesCPU.empty() ? &dummyEmissive : emissiveTrianglesCPU.data())
-                                                                     length:(emissiveTrianglesCPU.empty() ? sizeof(EmissiveTriangleGPUCPU)
-                                                                                                    : emissiveTrianglesCPU.size() * sizeof(EmissiveTriangleGPUCPU))
-                                                                    options:MTLResourceStorageModeShared];
-        uint32_t emissiveTriangleCount = static_cast<uint32_t>(emissiveTrianglesCPU.size());
-        id<MTLBuffer> emissiveTriangleCountBuffer =
-            [g_device newBufferWithBytes:&emissiveTriangleCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-
-        const std::vector<DecalGPU> decalsCPU = BuildDecalTable(metaRes);
-        DecalGPU dummyDecal{};
-        id<MTLBuffer> decalBuffer = [g_device newBufferWithBytes:(decalsCPU.empty() ? &dummyDecal : decalsCPU.data())
-                                                          length:(decalsCPU.empty() ? sizeof(DecalGPU)
-                                                                                  : decalsCPU.size() * sizeof(DecalGPU))
-                                                         options:MTLResourceStorageModeShared];
-        uint32_t decalCount = static_cast<uint32_t>(decalsCPU.size());
-        id<MTLBuffer> decalCountBuffer =
-            [g_device newBufferWithBytes:&decalCount
-                                  length:sizeof(uint32_t)
-                                 options:MTLResourceStorageModeShared];
-        profile.emissiveDecalMs = ToMilliseconds(ProfileClock::now() - emissiveDecalStart);
+        const uint32_t frameIndex = g_frameIndex;
 
         if (!g_materialPBRBuffer || !g_materialPBRCountBuffer)
         {
@@ -1720,11 +1837,24 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         }
 
         const auto postParamsStart = ProfileClock::now();
+        if (!EnsureDecalBufferUploaded(metaRes, profile))
+            return false;
+
         PostProcessParamsCPU pp = BuildPostProcessParams(metaRes, cameraCPU, width, height, frameIndex);
-        id<MTLBuffer> postProcessBuffer =
-            [g_device newBufferWithBytes:&pp
-                                  length:sizeof(PostProcessParamsCPU)
-                                 options:MTLResourceStorageModeShared];
+        const std::array<uint32_t, 2> imageSize = {
+            static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height)
+        };
+        const auto smallStart = ProfileClock::now();
+        if (!UploadSharedValue(g_device, g_camBuffer, cameraCPU) ||
+            !UploadSharedValue(g_device, g_imgSizeBuffer, imageSize) ||
+            !UploadSharedValue(g_device, g_frameIndexBuffer, frameIndex) ||
+            !UploadSharedValue(g_device, g_postProcessBuffer, pp))
+        {
+            std::cerr << "Metal: не удалось обновить persistent small/frame buffers\n";
+            return false;
+        }
+        profile.smallBuffersMs = ToMilliseconds(ProfileClock::now() - smallStart);
         profile.postParamsMs = ToMilliseconds(ProfileClock::now() - postParamsStart);
 
         auto dispatchPass = [&](id<MTLComputePipelineState> pipeline, id<MTLComputeCommandEncoder> enc)
@@ -1753,33 +1883,33 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         {
             id<MTLComputeCommandEncoder> enc = [pathTraceCmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineTexture];
-            [enc setBuffer:bvhBuffer                   offset:0 atIndex:0];
-            [enc setBuffer:triBuffer                   offset:0 atIndex:1];
-            [enc setBuffer:nodeCountBuffer             offset:0 atIndex:2];
-            [enc setBuffer:rootIndexBuffer             offset:0 atIndex:3];
-            [enc setBuffer:camBuffer                   offset:0 atIndex:4];
-            [enc setBuffer:imgSizeBuffer               offset:0 atIndex:5];
-            [enc setBuffer:triCountBuffer              offset:0 atIndex:6];
-            [enc setBuffer:lightBuffer                 offset:0 atIndex:7];
-            [enc setBuffer:lightCountBuffer            offset:0 atIndex:8];
-            [enc setBuffer:frameIndexBuffer            offset:0 atIndex:9];
+            [enc setBuffer:g_tlasBuffer                offset:0 atIndex:0];
+            [enc setBuffer:g_triBuffer                 offset:0 atIndex:1];
+            [enc setBuffer:g_nodeCountBuffer           offset:0 atIndex:2];
+            [enc setBuffer:g_rootIndexBuffer           offset:0 atIndex:3];
+            [enc setBuffer:g_camBuffer                 offset:0 atIndex:4];
+            [enc setBuffer:g_imgSizeBuffer             offset:0 atIndex:5];
+            [enc setBuffer:g_triCountBuffer            offset:0 atIndex:6];
+            [enc setBuffer:g_lightBuffer               offset:0 atIndex:7];
+            [enc setBuffer:g_lightCountBuffer          offset:0 atIndex:8];
+            [enc setBuffer:g_frameIndexBuffer          offset:0 atIndex:9];
             if (g_materialBuffer)
                 [enc setBuffer:g_materialBuffer offset:0 atIndex:10];
             if (g_materialCountBuffer)
                 [enc setBuffer:g_materialCountBuffer offset:0 atIndex:11];
-            [enc setBuffer:meshNodeBuffer              offset:0 atIndex:12];
-            [enc setBuffer:instanceBuffer              offset:0 atIndex:13];
+            [enc setBuffer:g_meshNodeBuffer            offset:0 atIndex:12];
+            [enc setBuffer:g_instanceBuffer            offset:0 atIndex:13];
             [enc setBuffer:g_materialPBRBuffer         offset:0 atIndex:14];
             [enc setBuffer:g_materialPBRCountBuffer    offset:0 atIndex:15];
-            [enc setBuffer:emissiveTriangleBuffer      offset:0 atIndex:16];
-            [enc setBuffer:emissiveTriangleCountBuffer offset:0 atIndex:17];
-            [enc setBuffer:decalBuffer                 offset:0 atIndex:18];
-            [enc setBuffer:decalCountBuffer            offset:0 atIndex:19];
-            [enc setBuffer:meshNodeCountBuffer         offset:0 atIndex:20];
-            [enc setBuffer:instanceCountBuffer         offset:0 atIndex:21];
+            [enc setBuffer:g_emissiveTriangleBuffer      offset:0 atIndex:16];
+            [enc setBuffer:g_emissiveTriangleCountBuffer offset:0 atIndex:17];
+            [enc setBuffer:g_decalBuffer                 offset:0 atIndex:18];
+            [enc setBuffer:g_decalCountBuffer            offset:0 atIndex:19];
+            [enc setBuffer:g_meshNodeCountBuffer         offset:0 atIndex:20];
+            [enc setBuffer:g_instanceCountBuffer         offset:0 atIndex:21];
 
             [enc setTexture:g_accumTexture atIndex:0];
-            [enc setTexture:hdrTexture     atIndex:1];
+            [enc setTexture:g_hdrTexture   atIndex:1];
 
             const uint32_t texCount = static_cast<uint32_t>(g_baseColorTextures.size());
             for (uint32_t i = 0; i < texCount; ++i)
@@ -1793,9 +1923,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         {
             id<MTLComputeCommandEncoder> enc = [bloomExtractCmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineBloomExtract];
-            [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
-            [enc setTexture:hdrTexture    atIndex:0];
-            [enc setTexture:bloomTextureA atIndex:1];
+            [enc setBuffer:g_postProcessBuffer offset:0 atIndex:0];
+            [enc setTexture:g_hdrTexture    atIndex:0];
+            [enc setTexture:g_bloomTextureA atIndex:1];
             dispatchPass(g_pipelineBloomExtract, enc);
             [enc endEncoding];
         }
@@ -1804,9 +1934,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         {
             id<MTLComputeCommandEncoder> enc = [blurHCmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineBloomBlurH];
-            [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
-            [enc setTexture:bloomTextureA atIndex:0];
-            [enc setTexture:bloomTextureB atIndex:1];
+            [enc setBuffer:g_postProcessBuffer offset:0 atIndex:0];
+            [enc setTexture:g_bloomTextureA atIndex:0];
+            [enc setTexture:g_bloomTextureB atIndex:1];
             dispatchPass(g_pipelineBloomBlurH, enc);
             [enc endEncoding];
         }
@@ -1815,9 +1945,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         {
             id<MTLComputeCommandEncoder> enc = [blurVCmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelineBloomBlurV];
-            [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
-            [enc setTexture:bloomTextureB atIndex:0];
-            [enc setTexture:bloomTextureA atIndex:1];
+            [enc setBuffer:g_postProcessBuffer offset:0 atIndex:0];
+            [enc setTexture:g_bloomTextureB atIndex:0];
+            [enc setTexture:g_bloomTextureA atIndex:1];
             dispatchPass(g_pipelineBloomBlurV, enc);
             [enc endEncoding];
         }
@@ -1826,10 +1956,10 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         {
             id<MTLComputeCommandEncoder> enc = [finalCompositeCmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelinePostProcess];
-            [enc setBuffer:postProcessBuffer offset:0 atIndex:0];
-            [enc setTexture:hdrTexture    atIndex:0];
-            [enc setTexture:bloomTextureA atIndex:1];
-            [enc setTexture:outTexture    atIndex:2];
+            [enc setBuffer:g_postProcessBuffer offset:0 atIndex:0];
+            [enc setTexture:g_hdrTexture    atIndex:0];
+            [enc setTexture:g_bloomTextureA atIndex:1];
+            [enc setTexture:g_outTexture    atIndex:2];
             dispatchPass(g_pipelinePostProcess, enc);
             [enc endEncoding];
         }
@@ -1860,10 +1990,10 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         std::vector<float> tmp;
         tmp.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
 
-        [outTexture getBytes:tmp.data()
-                  bytesPerRow:width * 4 * sizeof(float)
-                  fromRegion:region
-                 mipmapLevel:0];
+        [g_outTexture getBytes:tmp.data()
+                    bytesPerRow:width * 4 * sizeof(float)
+                     fromRegion:region
+                    mipmapLevel:0];
 
         const std::size_t pixelCount = framebuffer.size();
         for (std::size_t i = 0; i < pixelCount; ++i)

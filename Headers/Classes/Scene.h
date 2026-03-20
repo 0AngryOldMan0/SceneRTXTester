@@ -8,6 +8,7 @@
 #include "BVHBuilder.h"
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -81,6 +82,7 @@ public:
     const std::vector<BVHNode> &getGlobalMeshNodes() const { return globalMeshNodes_; }
     const std::vector<Triangle> &getGlobalTriangles() const { return globalTriangles_; }
     const std::vector<SceneInstanceGPU> &getGlobalInstances() const { return globalInstances_; }
+    std::uint64_t getSceneRevision() const { return sceneRevision_; }
 
     AABB getBoundingBox() const;
     Vec3 getCenter() const;
@@ -99,6 +101,7 @@ private:
     std::vector<SceneObject> objects_;
     std::unordered_map<std::string, std::size_t> objectIndexByName_;
     std::vector<Light> lights_;
+    std::uint64_t sceneRevision_ = 1;
 
     // Step 2 runtime representation:
     // - globalTriangles_  : unique prototype triangles concatenated once
