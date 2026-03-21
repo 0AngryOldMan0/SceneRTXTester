@@ -12,6 +12,10 @@ constant float ENV_INTENSITY_GPU               = 0.10f;  // subtle fallback only
 constant float LIGHT_FALLOFF_DISTANCE_SCALE    = 1.0f;   // use exported light distance/falloff as-is
 constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 1.15f;  // slight UE-like soft extension for practical reach in large tunnel scenes
 constant float LOCAL_LIGHT_EXPOSURE_GPU        = 0.10f;  // base calibration for local finite lights after world-unit -> meter conversion
+constant float VOLUME_FOG_DENSITY_SCALE        = 0.035f; // remap exported UE fog_density into subtle per-meter extinction
+constant float VOLUME_FOG_START_FADE_METERS    = 30.0f;  // avoid a hard fog wall at start distance
+constant float VOLUME_AMBIENT_SCATTER_SCALE    = 0.010f; // keep global fog contribution in haze range
+constant float VOLUME_LIGHT_SCATTER_SCALE      = 0.10f;  // preserve shafts/highlights without turning into a veil
 
 // --- параметры денойзера ---
 constant bool  DENOISE_ENABLE        = true;
@@ -2782,12 +2786,22 @@ inline PrimaryMediumSample evaluatePrimaryMediumAtPoint(float3 p,
     const float worldToMeters = max(pp.worldUnitToMeters, 1.0e-4f);
 
     float globalSigmaT = 0.0f;
-    if (pp.fogDensity > 1.0e-6f && distanceAlongRay >= max(pp.fogStartDistance, 0.0f))
+    const float distanceMeters = max(distanceAlongRay, 0.0f) * worldToMeters;
+    const float startMeters = max(pp.fogStartDistance, 0.0f) * worldToMeters;
+    const float startFade = smoothstep(startMeters,
+                                       startMeters + VOLUME_FOG_START_FADE_METERS,
+                                       distanceMeters);
+    if (pp.fogDensity > 1.0e-6f && startFade > 1.0e-4f)
     {
         const float heightMeters = (p.z - pp.fogHeightZ) * worldToMeters;
         const float exponent = clamp(-pp.fogHeightFalloff * heightMeters, -10.0f, 10.0f);
         const float heightFactor = exp(exponent);
-        globalSigmaT = max(pp.fogDensity, 0.0f) * max(pp.fogExtinctionScale, 0.0f) * heightFactor;
+        globalSigmaT = max(pp.fogDensity, 0.0f) *
+                       max(pp.fogExtinctionScale, 0.0f) *
+                       VOLUME_FOG_DENSITY_SCALE *
+                       heightFactor *
+                       startFade;
+        globalSigmaT = min(globalSigmaT, 0.08f);
     }
 
     float localSigmaT = 0.0f;
@@ -2921,7 +2935,7 @@ inline float3 computePrimaryVolumeAmbientSource(const PrimaryMediumSample medium
     if (luminance3(medium.ambientTint) <= 1.0e-6f)
         return float3(0.0f);
 
-    return medium.ambientTint * 0.025f;
+    return medium.ambientTint * VOLUME_AMBIENT_SCATTER_SCALE;
 }
 
 inline float3 samplePrimaryVolumeExplicitLight(float3 samplePos,
@@ -3023,7 +3037,7 @@ inline float3 samplePrimaryVolumeExplicitLight(float3 samplePos,
 
     const float phase = henyeyGreensteinPhase(dot(rayDir, L), medium.anisotropy);
     const float3 Li = float3(light.color) * intensity;
-    return Li * (phase / max(lightPmf, 1.0e-6f));
+    return Li * (phase / max(lightPmf, 1.0e-6f)) * VOLUME_LIGHT_SCATTER_SCALE;
 }
 
 inline PrimaryVolumetricResult integratePrimaryVolumetrics(const Ray ray,
