@@ -32,7 +32,7 @@ namespace
     {
         std::vector<Vec3> positions;
         std::vector<Vec3> normals;
-        std::vector<Vec2> uv0;
+        std::array<std::vector<Vec2>, 3> uvSets;
         std::vector<uint32_t> indices;
         std::vector<SectionInfo> defaultSections;
     };
@@ -126,18 +126,19 @@ namespace
             std::vector<Vec2> allUvs;
             ReadVectorAt(binFile, uvsOffset, allUvs, (std::size_t)vertexCount * (std::size_t)uvSetCount);
 
-            // meshes.bin stores UVs channel-major:
-            // [UV0 for all vertices][UV1 for all vertices]...
-            // Keep only the first UV set here because the current renderer/material pipeline
-            // samples a single UV channel.
-            mesh.uv0.resize(vertexCount, Vec2{0.0f, 0.0f});
-            const std::size_t firstChannelBase = 0;
-            for (uint32_t vi = 0; vi < vertexCount; ++vi)
-                mesh.uv0[vi] = allUvs[firstChannelBase + (std::size_t)vi];
+            for (std::size_t set = 0; set < mesh.uvSets.size(); ++set)
+            {
+                mesh.uvSets[set].resize(vertexCount, Vec2{0.0f, 0.0f});
+                const std::size_t srcSet = std::min<std::size_t>(set, std::max<std::size_t>(uvSetCount, 1u) - 1u);
+                const std::size_t channelBase = srcSet * (std::size_t)vertexCount;
+                for (uint32_t vi = 0; vi < vertexCount; ++vi)
+                    mesh.uvSets[set][vi] = allUvs[channelBase + (std::size_t)vi];
+            }
         }
         else
         {
-            mesh.uv0.assign(vertexCount, Vec2{0.0f, 0.0f});
+            for (std::vector<Vec2>& uvSet : mesh.uvSets)
+                uvSet.assign(vertexCount, Vec2{0.0f, 0.0f});
         }
 
         auto itSections = lod.find("sections");
@@ -424,9 +425,13 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
                 t.v1 = mesh.positions[i1];
                 t.v2 = mesh.positions[i2];
 
-                t.uv0 = (i0 < mesh.uv0.size()) ? mesh.uv0[i0] : Vec2{0.0f, 0.0f};
-                t.uv1 = (i1 < mesh.uv0.size()) ? mesh.uv0[i1] : Vec2{0.0f, 0.0f};
-                t.uv2 = (i2 < mesh.uv0.size()) ? mesh.uv0[i2] : Vec2{0.0f, 0.0f};
+                for (int uvSet = 0; uvSet < 3; ++uvSet)
+                {
+                    const std::vector<Vec2>& src = mesh.uvSets[(std::size_t)uvSet];
+                    TriangleUV(t, uvSet, 0) = (i0 < src.size()) ? src[i0] : Vec2{0.0f, 0.0f};
+                    TriangleUV(t, uvSet, 1) = (i1 < src.size()) ? src[i1] : Vec2{0.0f, 0.0f};
+                    TriangleUV(t, uvSet, 2) = (i2 < src.size()) ? src[i2] : Vec2{0.0f, 0.0f};
+                }
 
                 Vec3 nrm{0.0f, 0.0f, 0.0f};
                 if (i0 < mesh.normals.size()) { nrm.x += mesh.normals[i0].x; nrm.y += mesh.normals[i0].y; nrm.z += mesh.normals[i0].z; }

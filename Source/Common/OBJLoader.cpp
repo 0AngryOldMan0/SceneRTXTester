@@ -358,9 +358,15 @@ void OBJLoader::processFace(const std::vector<OBJVertex> &vertices,
         t.v1 = fetchPos(v1);
         t.v2 = fetchPos(v2);
 
-        t.uv0 = fetchUV(v0);
-        t.uv1 = fetchUV(v1);
-        t.uv2 = fetchUV(v2);
+        const Vec2 uv0 = fetchUV(v0);
+        const Vec2 uv1 = fetchUV(v1);
+        const Vec2 uv2 = fetchUV(v2);
+        for (int uvSet = 0; uvSet < 3; ++uvSet)
+        {
+            TriangleUV(t, uvSet, 0) = uv0;
+            TriangleUV(t, uvSet, 1) = uv1;
+            TriangleUV(t, uvSet, 2) = uv2;
+        }
 
         const Vec3 n0 = fetchNorm(v0);
         const Vec3 n1 = fetchNorm(v1);

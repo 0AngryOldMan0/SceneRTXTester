@@ -93,6 +93,18 @@ namespace
 
     std::vector<id<MTLTexture>> g_baseColorTextures;
     std::vector<std::string>   g_baseColorTexturePaths; // чтобы понимать, когда нужно перезагружать
+    struct CpuSampleTexture
+    {
+        size_t width = 0;
+        size_t height = 0;
+        std::vector<uint8_t> bgra;
+
+        bool valid() const
+        {
+            return width > 0 && height > 0 && bgra.size() == width * height * 4u;
+        }
+    };
+    std::unordered_map<std::string, CpuSampleTexture> g_cpuSceneTextureCache;
 
     id<MTLBuffer>               g_materialPBRBuffer      = nil;   // подготовка под расширенный MaterialGPU (пока не используется шейдером)
     id<MTLBuffer>               g_materialPBRCountBuffer = nil;
@@ -113,6 +125,8 @@ namespace
     id<MTLBuffer>               g_emissiveTriangleCountBuffer = nil;
     id<MTLBuffer>               g_decalBuffer                 = nil;
     id<MTLBuffer>               g_decalCountBuffer            = nil;
+    id<MTLBuffer>               g_airDustVolumeBuffer         = nil;
+    id<MTLBuffer>               g_airDustVolumeCountBuffer    = nil;
     id<MTLBuffer>               g_camBuffer                   = nil;
     id<MTLBuffer>               g_imgSizeBuffer               = nil;
     id<MTLBuffer>               g_sampleCountBuffer           = nil;
@@ -120,6 +134,7 @@ namespace
 
     std::uint64_t               g_cachedSceneRevision         = 0;
     const SceneMetaResources   *g_cachedDecalMetaRes          = nullptr;
+    const SceneMetaResources   *g_cachedAirDustMetaRes        = nullptr;
 
     using ProfileClock = std::chrono::steady_clock;
 
@@ -374,6 +389,8 @@ namespace
         hash.addVec3(light.color);
         hash.addFloat(light.intensity);
         hash.addFloat(light.radius);
+        hash.addFloat(light.sourceLength);
+        hash.addFloat(light.softSourceRadius);
         hash.addFloat(light.attenuationRadius);
         hash.addFloat(light.spotSize);
         hash.addFloat(light.spotBlend);
@@ -393,6 +410,17 @@ namespace
         hash.addFloat(material.opacity);
         hash.addI32(material.blendMode);
         hash.addBool(material.twoSided);
+        hash.addBool(material.thinEmissiveSurface);
+        hash.addBool(material.emissionUseAlphaMask);
+        hash.addI32(material.specialModel);
+        hash.addI32(material.specialTex0Index);
+        hash.addI32(material.specialTex1Index);
+        hash.addFloat(material.specialScalar0);
+        hash.addFloat(material.specialScalar1);
+        hash.addFloat(material.specialScalar2);
+        hash.addFloat(material.specialScalar3);
+        hash.addFloat(material.specialScalar4);
+        hash.addFloat(material.specialScalar5);
         hash.addFloat(material.decalTilingU);
         hash.addFloat(material.decalTilingV);
         hash.addFloat(material.decalOpacityPower);
@@ -404,11 +432,18 @@ namespace
         hash.addBool(material.decalDetailTexIsLinear);
         hash.addI32(material.baseColorTexIndex);
         hash.addI32(material.emissionTexIndex);
+        hash.addI32(material.baseColorUvSet);
+        hash.addI32(material.emissionUvSet);
         hash.addI32(material.normalTexIndex);
         hash.addI32(material.ormTexIndex);
         hash.addI32(material.roughnessTexIndex);
         hash.addI32(material.metallicTexIndex);
         hash.addI32(material.occlusionTexIndex);
+        hash.addI32(material.normalUvSet);
+        hash.addI32(material.ormUvSet);
+        hash.addI32(material.roughnessUvSet);
+        hash.addI32(material.metallicUvSet);
+        hash.addI32(material.occlusionUvSet);
         hash.addU8(material.ormChannels.occlusion);
         hash.addU8(material.ormChannels.roughness);
         hash.addU8(material.ormChannels.metallic);
@@ -594,12 +629,15 @@ struct LightGPU
 
     float intensity;
     float radius;            // геометрический размер источника
+    float sourceLength;      // длина трубчатого/капсульного источника вдоль direction
+    float softSourceRadius;  // эффективный мягкий радиус для spec/penumbra
     float spotSize;          // радианы
     float spotBlend;         // 0..1
 
     float attenuationRadius; // UE AttenuationRadius, 0 = бесконечный (старое поведение)
+    float _pad1;
 };
-static_assert(sizeof(LightGPU) == 64, "LightGPU size must be 64 bytes");
+static_assert(sizeof(LightGPU) == 76, "LightGPU size must be 76 bytes");
 
 // Материал на GPU: треугольник хранит materialIndex, а материал хранит ссылки на текстуры.
 // (Это масштабируемый “движковый” способ, как в UE/рендер-пайплайнах.)
@@ -607,13 +645,12 @@ static_assert(sizeof(LightGPU) == 64, "LightGPU size must be 64 bytes");
 struct MaterialGPU
 {
     int32_t baseColorTexIndex; // индекс в массиве baseColorTextures, -1 если нет
-    int32_t emissionTexIndex;  // на будущее
-    int32_t _pad0;
-    int32_t _pad1;
+    int32_t emissionTexIndex;
+    int32_t baseColorUvSet;
+    int32_t emissionUvSet;
 };
 
-// Расширенный материал (под PBR карты). Пока НЕ используется шейдером.
-// Чтобы не сломать текущий рендер, старый MaterialGPU (16B) остаётся в buffer(10).
+// Расширенный материал (layout должен совпадать с RayTrace.metal).
 struct MaterialGPU_PBR
 {
     int32_t baseColorTexIndex;
@@ -624,8 +661,31 @@ struct MaterialGPU_PBR
     int32_t metallicTexIndex;
     int32_t occlusionTexIndex;
     int32_t flags;
+
+    int32_t baseColorUvSet;
+    int32_t emissionUvSet;
+    int32_t normalUvSet;
+    int32_t ormUvSet;
+    int32_t roughnessUvSet;
+    int32_t metallicUvSet;
+    int32_t occlusionUvSet;
+    int32_t specialModel;
+
+    int32_t specialTex0Index;
+    int32_t specialTex1Index;
+    int32_t _pad0;
+    int32_t _pad1;
+
+    float   specialScalar0;
+    float   specialScalar1;
+    float   specialScalar2;
+    float   specialScalar3;
+    float   specialScalar4;
+    float   specialScalar5;
+    float   _pad2;
+    float   _pad3;
 };
-static_assert(sizeof(MaterialGPU_PBR) == 32, "MaterialGPU_PBR size must be 32 bytes");
+static_assert(sizeof(MaterialGPU_PBR) == 112, "MaterialGPU_PBR size must be 112 bytes");
 static_assert(sizeof(MaterialGPU) == 16, "MaterialGPU size must be 16 bytes");
 
 struct DecalGPU
@@ -659,6 +719,15 @@ struct EmissiveTriangleGPUCPU
     float    cdf;
 };
 static_assert(sizeof(EmissiveTriangleGPUCPU) == 20, "EmissiveTriangleGPUCPU size must be 20 bytes");
+
+struct AirDustVolumeGPUCPU
+{
+    float centerX, centerY, centerZ, density;
+    float extentX, extentY, extentZ, anisotropy;
+    float lightPosX, lightPosY, lightPosZ, lightIntensity;
+    float lightColorX, lightColorY, lightColorZ, lightRadius;
+};
+static_assert(sizeof(AirDustVolumeGPUCPU) == 64, "AirDustVolumeGPUCPU size must be 64 bytes");
 
 struct PostProcessParamsCPU
 {
@@ -919,6 +988,7 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
             g_cachedDecalMetaRes = nullptr;
             g_baseColorTextures.clear();
             g_baseColorTexturePaths.clear();
+            g_cpuSceneTextureCache.clear();
             g_linearTextureValid.clear();
             g_materialBuffer = nil;
             g_materialCountBuffer = nil;
@@ -926,6 +996,9 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
             g_materialPBRCountBuffer = nil;
             g_decalBuffer = nil;
             g_decalCountBuffer = nil;
+            g_airDustVolumeBuffer = nil;
+            g_airDustVolumeCountBuffer = nil;
+            g_cachedAirDustMetaRes = nullptr;
         }
         return true;
     }
@@ -972,6 +1045,7 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
 
     g_baseColorTextures.clear();
     g_baseColorTexturePaths.clear();
+    g_cpuSceneTextureCache.clear();
     g_linearTextureValid.clear();
 
     g_materialBuffer          = nil;
@@ -981,6 +1055,9 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
     g_cachedDecalMetaRes      = nullptr;
     g_decalBuffer             = nil;
     g_decalCountBuffer        = nil;
+    g_cachedAirDustMetaRes    = nullptr;
+    g_airDustVolumeBuffer     = nil;
+    g_airDustVolumeCountBuffer = nil;
 
     g_baseColorTextures.reserve(baseCount + linCount);
     g_baseColorTexturePaths = combinedPaths;
@@ -1068,8 +1145,8 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
 
         m.baseColorTexIndex = bc;
         m.emissionTexIndex  = em;
-        m._pad0 = 0;
-        m._pad1 = 0;
+        m.baseColorUvSet    = std::clamp(sm.baseColorUvSet, 0, 2);
+        m.emissionUvSet     = std::clamp(sm.emissionUvSet, 0, 2);
 
         mats[i] = m;
     }
@@ -1086,6 +1163,10 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         if ((size_t)idx >= linCount)
             return -1;
         return (int32_t)(baseCount + (size_t)idx);
+    };
+    auto mapSceneTex = [&](int idx, bool isLinear) -> int32_t
+    {
+        return isLinear ? mapLinear(idx) : idx;
     };
 
     std::vector<MaterialGPU_PBR> matsPBR;
@@ -1105,6 +1186,26 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         mp.metallicTexIndex  = -1;
         mp.occlusionTexIndex = -1;
         mp.flags             = 0;
+        mp.baseColorUvSet    = std::clamp(sm.baseColorUvSet, 0, 2);
+        mp.emissionUvSet     = std::clamp(sm.emissionUvSet, 0, 2);
+        mp.normalUvSet       = std::clamp(sm.normalUvSet, 0, 2);
+        mp.ormUvSet          = std::clamp(sm.ormUvSet, 0, 2);
+        mp.roughnessUvSet    = std::clamp(sm.roughnessUvSet, 0, 2);
+        mp.metallicUvSet     = std::clamp(sm.metallicUvSet, 0, 2);
+        mp.occlusionUvSet    = std::clamp(sm.occlusionUvSet, 0, 2);
+        mp.specialModel      = sm.specialModel;
+        mp.specialTex0Index  = mapSceneTex(sm.specialTex0Index, false);
+        mp.specialTex1Index  = mapSceneTex(sm.specialTex1Index, false);
+        mp._pad0             = 0;
+        mp._pad1             = 0;
+        mp.specialScalar0    = sm.specialScalar0;
+        mp.specialScalar1    = sm.specialScalar1;
+        mp.specialScalar2    = sm.specialScalar2;
+        mp.specialScalar3    = sm.specialScalar3;
+        mp.specialScalar4    = sm.specialScalar4;
+        mp.specialScalar5    = sm.specialScalar5;
+        mp._pad2             = 0.0f;
+        mp._pad3             = 0.0f;
 
         if constexpr (has_member_normalTexIndex<SceneMetaMaterial>::value)
             mp.normalTexIndex = mapLinear(sm.normalTexIndex);
@@ -1123,8 +1224,10 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         else if constexpr (has_member_ormTexIndex<SceneMetaMaterial>::value)
             mp.occlusionTexIndex = mapLinear(sm.ormTexIndex); // fallback: AO channel is inside ORM
 
-        if (sm.blendMode >= 2 && mp.emissionTexIndex >= 0 && mp.emissionTexIndex == mp.baseColorTexIndex)
+        if (sm.emissionUseAlphaMask)
             mp.flags |= 1;
+        if (sm.thinEmissiveSurface)
+            mp.flags |= 2;
 
         matsPBR[i] = mp;
     }
@@ -1172,6 +1275,291 @@ static inline float LuminanceCPU(const Vec3 &c)
     return c.x * 0.2126f + c.y * 0.7152f + c.z * 0.0722f;
 }
 
+static inline float Clamp01CPU(float v)
+{
+    return std::clamp(v, 0.0f, 1.0f);
+}
+
+static inline float FractCPU(float v)
+{
+    return v - std::floor(v);
+}
+
+static inline Vec2 FractCPU(const Vec2 &uv)
+{
+    return Vec2{FractCPU(uv.x), FractCPU(uv.y)};
+}
+
+static inline float SrgbToLinearCPU(float c)
+{
+    if (c <= 0.04045f)
+        return c / 12.92f;
+    return std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static CpuSampleTexture LoadCpuSceneTexture(const std::string& pathUtf8)
+{
+    CpuSampleTexture out{};
+    NSString *nsPath = [NSString stringWithUTF8String:pathUtf8.c_str()];
+    if (!nsPath)
+        return out;
+
+    NSURL *url = [NSURL fileURLWithPath:nsPath];
+    if (!url)
+        return out;
+
+    CGImageSourceRef src = CGImageSourceCreateWithURL((CFURLRef)url, nullptr);
+    if (!src)
+        return out;
+
+    CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, nullptr);
+    CFRelease(src);
+    if (!img)
+        return out;
+
+    const size_t w = CGImageGetWidth(img);
+    const size_t h = CGImageGetHeight(img);
+    if (w == 0 || h == 0)
+    {
+        CGImageRelease(img);
+        return out;
+    }
+
+    out.width = w;
+    out.height = h;
+    out.bgra.resize(w * h * 4u);
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(out.bgra.data(),
+                                             w, h,
+                                             8,
+                                             w * 4,
+                                             cs,
+                                             kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
+    CGColorSpaceRelease(cs);
+    if (!ctx)
+    {
+        out = {};
+        CGImageRelease(img);
+        return out;
+    }
+
+    CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), img);
+    CGContextRelease(ctx);
+    CGImageRelease(img);
+    return out;
+}
+
+static const CpuSampleTexture* GetCpuSceneTexture(const SceneMetaResources *metaRes, int32_t texIndex)
+{
+    if (!metaRes || texIndex < 0 || (std::size_t)texIndex >= metaRes->baseColorTextures.size())
+        return nullptr;
+
+    const std::string &path = metaRes->baseColorTextures[(std::size_t)texIndex];
+    auto it = g_cpuSceneTextureCache.find(path);
+    if (it == g_cpuSceneTextureCache.end())
+    {
+        auto [ins, _] = g_cpuSceneTextureCache.emplace(path, LoadCpuSceneTexture(path));
+        it = ins;
+    }
+    return it->second.valid() ? &it->second : nullptr;
+}
+
+static inline Vec3 DecodeCpuSceneTexelLinear(const CpuSampleTexture &tex, int x, int y)
+{
+    if (!tex.valid())
+        return Vec3{0.0f, 0.0f, 0.0f};
+
+    const int w = (int)tex.width;
+    const int h = (int)tex.height;
+    x = ((x % w) + w) % w;
+    y = ((y % h) + h) % h;
+
+    const std::size_t idx = ((std::size_t)y * tex.width + (std::size_t)x) * 4u;
+    const float b = tex.bgra[idx + 0u] / 255.0f;
+    const float g = tex.bgra[idx + 1u] / 255.0f;
+    const float r = tex.bgra[idx + 2u] / 255.0f;
+    return Vec3{SrgbToLinearCPU(r), SrgbToLinearCPU(g), SrgbToLinearCPU(b)};
+}
+
+static inline float DecodeCpuSceneAlpha(const CpuSampleTexture &tex, int x, int y)
+{
+    if (!tex.valid())
+        return 1.0f;
+
+    const int w = (int)tex.width;
+    const int h = (int)tex.height;
+    x = ((x % w) + w) % w;
+    y = ((y % h) + h) % h;
+
+    const std::size_t idx = ((std::size_t)y * tex.width + (std::size_t)x) * 4u;
+    return tex.bgra[idx + 3u] / 255.0f;
+}
+
+static inline void SampleCpuSceneTextureLinear(const CpuSampleTexture &tex,
+                                               const Vec2 &uvIn,
+                                               Vec3 &rgbOut,
+                                               float &alphaOut)
+{
+    if (!tex.valid())
+    {
+        rgbOut = Vec3{1.0f, 1.0f, 1.0f};
+        alphaOut = 1.0f;
+        return;
+    }
+
+    const Vec2 uv = FractCPU(uvIn);
+    const float fx = uv.x * (float)tex.width - 0.5f;
+    const float fy = uv.y * (float)tex.height - 0.5f;
+    const int x0 = (int)std::floor(fx);
+    const int y0 = (int)std::floor(fy);
+    const int x1 = x0 + 1;
+    const int y1 = y0 + 1;
+    const float tx = fx - (float)x0;
+    const float ty = fy - (float)y0;
+
+    const Vec3 c00 = DecodeCpuSceneTexelLinear(tex, x0, y0);
+    const Vec3 c10 = DecodeCpuSceneTexelLinear(tex, x1, y0);
+    const Vec3 c01 = DecodeCpuSceneTexelLinear(tex, x0, y1);
+    const Vec3 c11 = DecodeCpuSceneTexelLinear(tex, x1, y1);
+
+    const float a00 = DecodeCpuSceneAlpha(tex, x0, y0);
+    const float a10 = DecodeCpuSceneAlpha(tex, x1, y0);
+    const float a01 = DecodeCpuSceneAlpha(tex, x0, y1);
+    const float a11 = DecodeCpuSceneAlpha(tex, x1, y1);
+
+    const Vec3 cx0{
+        c00.x + (c10.x - c00.x) * tx,
+        c00.y + (c10.y - c00.y) * tx,
+        c00.z + (c10.z - c00.z) * tx
+    };
+    const Vec3 cx1{
+        c01.x + (c11.x - c01.x) * tx,
+        c01.y + (c11.y - c01.y) * tx,
+        c01.z + (c11.z - c01.z) * tx
+    };
+    rgbOut = Vec3{
+        cx0.x + (cx1.x - cx0.x) * ty,
+        cx0.y + (cx1.y - cx0.y) * ty,
+        cx0.z + (cx1.z - cx0.z) * ty
+    };
+
+    const float ax0 = a00 + (a10 - a00) * tx;
+    const float ax1 = a01 + (a11 - a01) * tx;
+    alphaOut = ax0 + (ax1 - ax0) * ty;
+}
+
+static inline Vec2 TriangleUvAtBary(const Triangle &tri, int uvSet, float b0, float b1, float b2)
+{
+    const int clampedSet = std::clamp(uvSet, 0, 2);
+    const Vec2 &uv0 = TriangleUV(tri, clampedSet, 0);
+    const Vec2 &uv1 = TriangleUV(tri, clampedSet, 1);
+    const Vec2 &uv2 = TriangleUV(tri, clampedSet, 2);
+    return Vec2{
+        uv0.x * b0 + uv1.x * b1 + uv2.x * b2,
+        uv0.y * b0 + uv1.y * b1 + uv2.y * b2
+    };
+}
+
+static inline float SampleEmissiveMaskCPU(const Vec3 &rgb, float alpha)
+{
+    const float alphaMask = Clamp01CPU(alpha);
+    const float lumaMask = Clamp01CPU(LuminanceCPU(rgb));
+    if (alphaMask > 1.0e-4f)
+    {
+        const float t = Clamp01CPU((alphaMask - 0.22f) / std::max(0.82f - 0.22f, 1.0e-6f));
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    const float t = Clamp01CPU((lumaMask - 0.16f) / std::max(0.42f - 0.16f, 1.0e-6f));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static Vec3 EvaluateTriangleEmissionCPU(const Triangle &tri,
+                                        const SceneMetaMaterial &material,
+                                        const SceneMetaResources *metaRes,
+                                        const Vec2 &uvBase,
+                                        const Vec2 &uvEmission,
+                                        float ndv)
+{
+    Vec3 emissive{tri.emission.x, tri.emission.y, tri.emission.z};
+
+    Vec3 baseColorTex{1.0f, 1.0f, 1.0f};
+    float dummyAlpha = 1.0f;
+    if (const CpuSampleTexture *baseTex = GetCpuSceneTexture(metaRes, material.baseColorTexIndex))
+        SampleCpuSceneTextureLinear(*baseTex, uvBase, baseColorTex, dummyAlpha);
+
+    Vec3 emissionTex{1.0f, 1.0f, 1.0f};
+    float emissionAlpha = 1.0f;
+    const CpuSampleTexture *emissionTexCpu = GetCpuSceneTexture(metaRes, material.emissionTexIndex);
+    if (emissionTexCpu)
+        SampleCpuSceneTextureLinear(*emissionTexCpu, uvEmission, emissionTex, emissionAlpha);
+
+    if (material.specialModel == 2)
+    {
+        emissive.x *= emissionTex.x;
+        emissive.y *= emissionTex.y;
+        emissive.z *= emissionTex.z;
+    }
+    else if (emissionTexCpu)
+    {
+        if (material.emissionUseAlphaMask)
+        {
+            const float mask = SampleEmissiveMaskCPU(emissionTex, emissionAlpha);
+            emissive.x *= mask;
+            emissive.y *= mask;
+            emissive.z *= mask;
+        }
+        else
+        {
+            emissive.x *= emissionTex.x;
+            emissive.y *= emissionTex.y;
+            emissive.z *= emissionTex.z;
+        }
+    }
+
+    if (material.specialModel == 1)
+    {
+        const float baseLuma = Clamp01CPU(LuminanceCPU(baseColorTex));
+        const float innerGlow = Clamp01CPU(material.specialScalar0);
+        const float transparency = Clamp01CPU(material.specialScalar4);
+        const float rim = std::pow(Clamp01CPU(1.0f - ndv), std::max(material.specialScalar1, 1.0f));
+        const float dirtTransmission =
+            std::clamp(material.specialScalar2 + baseLuma * std::max(material.specialScalar5, 0.5f) + material.specialScalar3,
+                       0.20f, 1.40f);
+        const float glowGain = (0.95f + innerGlow * 0.30f) * (0.75f + baseLuma * 0.35f);
+        const float rimGain = 1.0f + rim * 0.10f * transparency;
+        const float totalGain = std::max(dirtTransmission * glowGain * rimGain, 0.25f);
+        emissive.x *= totalGain;
+        emissive.y *= totalGain;
+        emissive.z *= totalGain;
+    }
+
+    return emissive;
+}
+
+static float EstimateTriangleTexturedEmissiveLuminanceCPU(const Triangle &tri,
+                                                          const SceneMetaMaterial &material,
+                                                          const SceneMetaResources *metaRes)
+{
+    constexpr std::array<std::array<float, 3>, 4> kSampleBary = {{
+        {0.33333334f, 0.33333334f, 0.33333334f},
+        {0.60f, 0.20f, 0.20f},
+        {0.20f, 0.60f, 0.20f},
+        {0.20f, 0.20f, 0.60f},
+    }};
+
+    float accum = 0.0f;
+    for (const auto &b : kSampleBary)
+    {
+        const Vec2 uvBase = FractCPU(TriangleUvAtBary(tri, material.baseColorUvSet, b[0], b[1], b[2]));
+        const Vec2 uvEmission = FractCPU(TriangleUvAtBary(tri, material.emissionUvSet, b[0], b[1], b[2]));
+        const Vec3 emissive = EvaluateTriangleEmissionCPU(tri, material, metaRes, uvBase, uvEmission, 1.0f);
+        accum += LuminanceCPU(emissive);
+    }
+    return accum / (float)kSampleBary.size();
+}
+
 static inline float TriangleAreaCPU(const Triangle &t)
 {
     const float e1x = t.v1.x - t.v0.x;
@@ -1200,7 +1588,8 @@ static inline Vec3 TransformPointCPU(const float m[12], const Vec3 &p)
 
 
 static std::vector<EmissiveTriangleGPUCPU> BuildEmissiveTriangleTable(const std::vector<Triangle> &tris,
-                                                                  const std::vector<SceneInstanceGPU> &instances)
+                                                                  const std::vector<SceneInstanceGPU> &instances,
+                                                                  const SceneMetaResources *metaRes)
 {
     std::vector<EmissiveTriangleGPUCPU> out;
     if (tris.empty() || instances.empty())
@@ -1211,13 +1600,38 @@ static std::vector<EmissiveTriangleGPUCPU> BuildEmissiveTriangleTable(const std:
     std::vector<double> weights;
     weights.reserve(tris.size());
 
+    std::vector<float> triangleEmissiveLuma(tris.size(), 0.0f);
+    for (std::size_t triIdx = 0; triIdx < tris.size(); ++triIdx)
+    {
+        const Triangle &tri = tris[triIdx];
+        const float rawLum = std::max(0.0f, LuminanceCPU(tri.emission));
+        if (rawLum <= 1.0e-8f)
+            continue;
+
+        float texturedLum = rawLum;
+        const int matId = tri.materialIndex;
+        if (metaRes &&
+            matId >= 0 &&
+            (std::size_t)matId < metaRes->materialsPBR.size())
+        {
+            const SceneMetaMaterial &material = metaRes->materialsPBR[(std::size_t)matId];
+            if (material.emissionTexIndex >= 0 || material.specialModel != 0)
+            {
+                texturedLum = EstimateTriangleTexturedEmissiveLuminanceCPU(tri, material, metaRes);
+                texturedLum = std::max(texturedLum, rawLum * 0.05f);
+            }
+        }
+
+        triangleEmissiveLuma[triIdx] = texturedLum;
+    }
+
     for (std::size_t instIdx = 0; instIdx < instances.size(); ++instIdx)
     {
         const SceneInstanceGPU &inst = instances[instIdx];
         for (std::size_t triIdx = 0; triIdx < tris.size(); ++triIdx)
         {
             const Triangle &t = tris[triIdx];
-            const float lum  = std::max(0.0f, LuminanceCPU(t.emission));
+            const float lum  = triangleEmissiveLuma[triIdx];
             if (lum <= 1.0e-8f)
                 continue;
 
@@ -1255,6 +1669,44 @@ static std::vector<EmissiveTriangleGPUCPU> BuildEmissiveTriangleTable(const std:
         cdf += weights[i] / totalWeight;
         out[i].selectionPdf = std::max(pdf, 1.0e-8f);
         out[i].cdf = static_cast<float>((i + 1 == out.size()) ? 1.0 : std::min(cdf, 1.0));
+    }
+
+    return out;
+}
+
+static std::vector<AirDustVolumeGPUCPU> BuildAirDustVolumeTable(const SceneMetaResources *metaRes)
+{
+    std::vector<AirDustVolumeGPUCPU> out;
+    if (!metaRes)
+        return out;
+
+    out.reserve(metaRes->airDustVolumes.size());
+    for (const SceneMetaAirDustVolume &src : metaRes->airDustVolumes)
+    {
+        if (src.linkedLightIntensity <= 0.0f)
+            continue;
+
+        AirDustVolumeGPUCPU v{};
+        v.centerX = src.position.x;
+        v.centerY = src.position.y;
+        v.centerZ = src.position.z;
+        v.extentX = std::max(src.extent.x, 1.0f);
+        v.extentY = std::max(src.extent.y, 1.0f);
+        v.extentZ = std::max(src.extent.z, 1.0f);
+        v.lightPosX = src.linkedLightPosition.x;
+        v.lightPosY = src.linkedLightPosition.y;
+        v.lightPosZ = src.linkedLightPosition.z;
+        v.lightColorX = src.linkedLightColor.x;
+        v.lightColorY = src.linkedLightColor.y;
+        v.lightColorZ = src.linkedLightColor.z;
+        v.lightIntensity = src.linkedLightIntensity;
+        v.lightRadius = std::max(src.linkedLightRadius,
+                                 std::max(v.extentX, std::max(v.extentY, v.extentZ)) * 1.5f);
+
+        const float normalizedIntensity = std::sqrt(std::max(src.linkedLightIntensity, 0.0f) / 2500.0f);
+        v.density = std::clamp(0.08f + normalizedIntensity * 0.10f, 0.06f, 0.24f);
+        v.anisotropy = 0.45f;
+        out.push_back(v);
     }
 
     return out;
@@ -1466,9 +1918,12 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
         dst.color     = src.color;
         dst.intensity = src.intensity;
         dst.radius    = src.radius;
+        dst.sourceLength = src.sourceLength;
+        dst.softSourceRadius = src.softSourceRadius;
         dst.spotSize  = src.spotSize;
         dst.spotBlend = src.spotBlend;
         dst.attenuationRadius = src.attenuationRadius;
+        dst._pad1 = 0.0f;
         gpuLights.push_back(dst);
     }
 
@@ -1484,7 +1939,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
 
     const auto emissiveStart = ProfileClock::now();
     const std::vector<EmissiveTriangleGPUCPU> emissiveTrianglesCPU =
-        BuildEmissiveTriangleTable(tris, instances);
+        BuildEmissiveTriangleTable(tris, instances, g_loadedMetaRes);
     const EmissiveTriangleGPUCPU dummyEmissive{};
     const uint32_t emissiveTriangleCount =
         static_cast<uint32_t>(emissiveTrianglesCPU.size());
@@ -1522,6 +1977,28 @@ static bool EnsureDecalBufferUploaded(const SceneMetaResources *metaRes,
     return true;
 }
 
+static bool EnsureAirDustBufferUploaded(const SceneMetaResources *metaRes,
+                                        TextureFrameProfile &profile)
+{
+    if (g_cachedAirDustMetaRes == metaRes && g_airDustVolumeBuffer && g_airDustVolumeCountBuffer)
+        return true;
+
+    const auto airDustStart = ProfileClock::now();
+    const std::vector<AirDustVolumeGPUCPU> airDustCPU = BuildAirDustVolumeTable(metaRes);
+    const AirDustVolumeGPUCPU dummyAirDust{};
+    const uint32_t airDustCount = static_cast<uint32_t>(airDustCPU.size());
+    if (!UploadSharedVector(g_device, g_airDustVolumeBuffer, airDustCPU, dummyAirDust) ||
+        !UploadSharedValue(g_device, g_airDustVolumeCountBuffer, airDustCount))
+    {
+        std::cerr << "Metal: не удалось создать persistent air-dust buffers\n";
+        return false;
+    }
+
+    profile.postParamsMs += ToMilliseconds(ProfileClock::now() - airDustStart);
+    g_cachedAirDustMetaRes = metaRes;
+    return true;
+}
+
 static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *metaRes,
                                                    const CameraDataCPU &cameraCPU,
                                                    int width,
@@ -1531,18 +2008,18 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
 {
     PostProcessParamsCPU pp{};
 
-    // Neutral fallback until scene-exported post-process overrides it.
-    pp.exposure = 1.0f;
+    // Calibrated fallback for scenes without exported post-process.
+    pp.exposure = 1.05f;
     pp.bloomIntensity = 0.0f;
-    pp.bloomThreshold = 1.0f;
+    pp.bloomThreshold = 0.25f;
     pp.vignetteIntensity = 0.0f;
     pp.chromaticAberration = 0.0f;
     pp.filmGrainIntensity = 0.0f;
-    pp.filmSlope = 0.88f;
-    pp.filmToe = 0.55f;
-    pp.filmShoulder = 0.26f;
+    pp.filmSlope = 0.95f;
+    pp.filmToe = 0.40f;
+    pp.filmShoulder = 0.35f;
     pp.filmBlackClip = 0.0f;
-    pp.filmWhiteClip = 0.04f;
+    pp.filmWhiteClip = 0.12f;
 
     pp.fogDensity = 0.0f;
     pp.fogHeightFalloff = 0.0f;
@@ -1559,7 +2036,7 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
     pp.colorSaturationX = 1.0f;
     pp.colorSaturationY = 1.0f;
     pp.colorSaturationZ = 1.0f;
-    pp.shadowLift = 0.0f;
+    pp.shadowLift = 0.010f;
 
     if (metaRes)
     {
@@ -1720,6 +2197,8 @@ bool PreloadMetalSceneResources(const SceneMetaResources *metaRes)
     TextureFrameProfile preloadProfile{};
     if (!EnsureDecalBufferUploaded(metaRes, preloadProfile))
         return false;
+    if (!EnsureAirDustBufferUploaded(metaRes, preloadProfile))
+        return false;
 
     return true;
 }
@@ -1838,6 +2317,8 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
 
         const auto postParamsStart = ProfileClock::now();
         if (!EnsureDecalBufferUploaded(metaRes, profile))
+            return false;
+        if (!EnsureAirDustBufferUploaded(metaRes, profile))
             return false;
 
         PostProcessParamsCPU pp = BuildPostProcessParams(metaRes,
@@ -1963,6 +2444,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             id<MTLComputeCommandEncoder> enc = [finalCompositeCmd computeCommandEncoder];
             [enc setComputePipelineState:g_pipelinePostProcess];
             [enc setBuffer:g_postProcessBuffer offset:0 atIndex:0];
+            [enc setBuffer:g_airDustVolumeBuffer offset:0 atIndex:1];
+            [enc setBuffer:g_airDustVolumeCountBuffer offset:0 atIndex:2];
+            [enc setBuffer:g_camBuffer offset:0 atIndex:3];
             [enc setTexture:g_hdrTexture    atIndex:0];
             [enc setTexture:g_bloomTextureA atIndex:1];
             [enc setTexture:g_outTexture    atIndex:2];

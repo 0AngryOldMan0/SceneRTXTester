@@ -75,7 +75,7 @@ namespace
     {
         constexpr int kPreviewSpp = 2;
         constexpr int kMaxStableDispatchSpp = 4;
-        constexpr int kDefaultProgressivePassCount = 4;
+        constexpr int kDefaultProgressivePassCount = 16;
 
         std::vector<int> schedule;
         if (mode == TextureRenderMode::Preview)

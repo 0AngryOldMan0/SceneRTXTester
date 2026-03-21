@@ -3,14 +3,13 @@ using namespace metal;
 
 constant float PI               = 3.14159265358979323846f;
 constant float INV_PI           = 1.0f / PI;
-constant float INV_4PI          = 1.0f / (4.0f * PI);
 constant float SHADOW_EPS       = 1e-3f;
 
 constant float EMISSION_VISIBLE_EXPOSURE_GPU   = 1.0f;   // emissive surfaces use exported scene energy directly
 constant float EMISSION_LIGHT_EXPOSURE_GPU     = 1.0f;   // emissive lighting also uses exported scene energy directly
-constant float ENV_INTENSITY_GPU               = 0.08f;  // subtle fallback only; scene lights should dominate
+constant float ENV_INTENSITY_GPU               = 0.10f;  // subtle fallback only; scene lights should dominate
 constant float LIGHT_FALLOFF_DISTANCE_SCALE    = 1.0f;   // use exported light distance/falloff as-is
-constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 1.0f;   // use exported attenuation radius as-is
+constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 1.15f;  // slight UE-like soft extension for practical reach in large tunnel scenes
 
 // --- параметры денойзера ---
 constant bool  DENOISE_ENABLE        = true;
@@ -90,9 +89,7 @@ struct Triangle
     packed_float3 v1;
     packed_float3 v2;
 
-    packed_float2 uv0;
-    packed_float2 uv1;
-    packed_float2 uv2;
+    packed_float2 uv[9];
 
     packed_float3 normal;
     AABB          ABoBa;
@@ -166,10 +163,13 @@ struct HitInfo
     float  metallic;
     float  roughness;
 
-    float2 uv;
+    float2 uv0;
+    float2 uv1;
+    float2 uv2;
 };
 
 // Типы источников света (должны соответствовать C++ LightType)
+constant int LIGHT_TYPE_POINT       = 0;
 constant int LIGHT_TYPE_DIRECTIONAL = 1;
 constant int LIGHT_TYPE_SPOT        = 2;
 constant int LIGHT_TYPE_AREA        = 3;
@@ -185,12 +185,15 @@ struct LightGPU
     packed_float3 color;
 
     float intensity;
-    float radius;             // геометрический размер источника (для мягких теней)
+    float radius;             // физический радиус источника
+    float sourceLength;       // длина трубчатого источника вдоль direction
+    float softSourceRadius;   // дополнительный мягкий радиус для penumbra/spec footprint
     float spotSize;           // в радианах (для Spot)
     float spotBlend;          // 0..1
 
     // Радиус затухания (UE AttenuationRadius, в тех же единицах, что и позиция)
     float attenuationRadius;
+    float _pad1;
 };
 
 constant uint MAX_BASE_TEX = 124; // unified scene texture pool (sRGB + linear), bound from texture(4)
@@ -198,9 +201,9 @@ constant uint MAX_BASE_TEX = 124; // unified scene texture pool (sRGB + linear),
 struct MaterialGPU
 {
     int baseColorTexIndex;  // индекс в массиве baseColorTextures, -1 если нет
-    int emissionTexIndex;   // на будущее
-    int _pad0;
-    int _pad1;
+    int emissionTexIndex;
+    int baseColorUvSet;
+    int emissionUvSet;
 };
 
 // Expanded PBR material layout (matches CPU MaterialGPU_PBR, buffer(14)).
@@ -214,9 +217,35 @@ struct MaterialGPU_PBR
     int metallicTexIndex;    // linear metallic map in unified pool, -1 if none
     int occlusionTexIndex;   // linear occlusion map in unified pool, -1 if none
     int flags;               // bit0 = use alpha/derived mask for emissive modulation
+
+    int baseColorUvSet;
+    int emissionUvSet;
+    int normalUvSet;
+    int ormUvSet;
+    int roughnessUvSet;
+    int metallicUvSet;
+    int occlusionUvSet;
+    int specialModel;
+
+    int specialTex0Index;
+    int specialTex1Index;
+    int _pad0;
+    int _pad1;
+
+    float specialScalar0;
+    float specialScalar1;
+    float specialScalar2;
+    float specialScalar3;
+    float specialScalar4;
+    float specialScalar5;
+    float _pad2;
+    float _pad3;
 };
 
 constant int MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = 1;
+constant int MATERIAL_FLAG_THIN_EMISSIVE_SURFACE   = 2;
+constant int SPECIAL_MATERIAL_UE_HEADLIGHT         = 1;
+constant int SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT     = 2;
 
 struct DecalGPU
 {
@@ -257,7 +286,17 @@ struct EmissiveLightSample
     float  selectionPdf;
     float3 position;
     float3 normal;
-    float2 uv;
+    float2 uv0;
+    float2 uv1;
+    float2 uv2;
+};
+
+struct AirDustVolumeGPU
+{
+    float centerX, centerY, centerZ, density;
+    float extentX, extentY, extentZ, anisotropy;
+    float lightPosX, lightPosY, lightPosZ, lightIntensity;
+    float lightColorX, lightColorY, lightColorZ, lightRadius;
 };
 
 struct BSDFSample
@@ -406,8 +445,158 @@ inline float3 safeNormalize(float3 v)
     return float3(0.0f, 0.0f, 1.0f);
 }
 
+inline float2 sampleDiskUniform(float u1, float u2)
+{
+    float r = sqrt(clamp01(u1));
+    float phi = 2.0f * PI * u2;
+    return float2(cos(phi), sin(phi)) * r;
+}
+
+inline float3 sampleSphereUniform(float u1, float u2)
+{
+    float z = 1.0f - 2.0f * u1;
+    float phi = 2.0f * PI * u2;
+    float rxy = sqrt(max(0.0f, 1.0f - z * z));
+    return float3(rxy * cos(phi), rxy * sin(phi), z);
+}
+
+inline float lightEffectiveRadius(const device LightGPU& light)
+{
+    return max(light.radius, light.softSourceRadius);
+}
+
+inline float3 sampleFiniteLightPosition(const device LightGPU& light,
+                                        uint                   seedA,
+                                        uint                   seedB,
+                                        uint                   seedC)
+{
+    const float3 lightPos = float3(light.position);
+    const float radius = max(0.0f, lightEffectiveRadius(light));
+    const float sourceLength = max(light.sourceLength, 0.0f);
+
+    if (!(radius > 0.0f || sourceLength > 0.0f))
+        return lightPos;
+
+    if (sourceLength <= 1.0e-6f)
+        return lightPos + sampleSphereUniform(rand01(seedA), rand01(seedB)) * radius;
+
+    const float3 axis = safeNormalize(float3(light.direction));
+    float3 samplePos = lightPos + axis * ((rand01(seedA) - 0.5f) * sourceLength);
+    if (radius <= 1.0e-6f)
+        return samplePos;
+
+    float3 tangent, bitangent;
+    buildOrthonormalBasis(axis, tangent, bitangent);
+    const float2 disk = sampleDiskUniform(rand01(seedB), rand01(seedC)) * radius;
+    return samplePos + tangent * disk.x + bitangent * disk.y;
+}
+
+inline float computeFiniteLightAttenuation(const device LightGPU& light,
+                                           float                  dist)
+{
+    const float falloffDist = max(dist * LIGHT_FALLOFF_DISTANCE_SCALE, 1e-3f);
+    const float r2 = falloffDist * falloffDist;
+    if (r2 <= 0.0f)
+        return 0.0f;
+
+    // Scene-export local lights match UE perceptually much closer when treated as candela-like
+    // intensities rather than dividing by an extra 4*pi factor.
+    float attenuation = ((light.type == LIGHT_TYPE_AREA) ? INV_PI : 1.0f) / r2;
+
+    if (light.attenuationRadius > 0.0f)
+    {
+        const float R = light.attenuationRadius * LIGHT_ATTENUATION_RADIUS_SCALE;
+        if (dist >= R)
+            return 0.0f;
+
+        const float s = dist / R;
+        const float s2 = s * s;
+        const float num = (1.0f - s2) * (1.0f - s2);
+        const float den = 1.0f + s2;
+        attenuation *= (den > 0.0f) ? (num / den) : 0.0f;
+    }
+
+    return attenuation;
+}
+
+inline float computeSpotFactor(const device LightGPU& light,
+                               float3                 samplePos,
+                               float3                 hitPos)
+{
+    const float spotSize = max(light.spotSize, 1e-4f);
+    const float spotBlend = clamp01(light.spotBlend);
+    const float outerAngle = 0.5f * spotSize;
+    const float innerAngle = outerAngle * (1.0f - spotBlend);
+    const float cosOuter = cos(outerAngle);
+    const float cosInner = cos(innerAngle);
+
+    const float3 lightDir = safeNormalize(float3(light.direction));
+    const float3 dirToPoint = safeNormalize(hitPos - samplePos);
+    const float cosTheta = dot(lightDir, dirToPoint);
+    if (cosTheta <= 0.0f)
+        return 0.0f;
+
+    if (spotBlend <= 0.0f || cosInner <= cosOuter)
+        return (cosTheta >= cosOuter) ? 1.0f : 0.0f;
+
+    if (cosTheta <= cosOuter)
+        return 0.0f;
+    if (cosTheta >= cosInner)
+        return 1.0f;
+
+    float t = (cosTheta - cosOuter) / (cosInner - cosOuter);
+    t = clamp01(t);
+    return t * t;
+}
+
+inline bool materialHasPBRFlag(int matId,
+                               int flag,
+                               const device MaterialGPU_PBR *materialsPBR,
+                               uint materialPBRCount)
+{
+    return materialsPBR != nullptr &&
+           matId >= 0 &&
+           uint(matId) < materialPBRCount &&
+           ((materialsPBR[matId].flags & flag) != 0);
+}
+
+inline int sanitizeUvSet(int uvSet)
+{
+    return clamp(uvSet, 0, 2);
+}
+
+inline float2 triangleUvVertex(const device Triangle& tri,
+                               int                    uvSet,
+                               int                    vertexIndex)
+{
+    const int clampedUvSet = sanitizeUvSet(uvSet);
+    const int clampedVertex = clamp(vertexIndex, 0, 2);
+    return float2(tri.uv[clampedUvSet * 3 + clampedVertex]);
+}
+
+inline float2 triangleSampleUvSet(const device Triangle& tri,
+                                  float                  b0,
+                                  float                  b1,
+                                  float                  b2,
+                                  int                    uvSet)
+{
+    const float2 uv0 = triangleUvVertex(tri, uvSet, 0);
+    const float2 uv1 = triangleUvVertex(tri, uvSet, 1);
+    const float2 uv2 = triangleUvVertex(tri, uvSet, 2);
+    return uv0 * b0 + uv1 * b1 + uv2 * b2;
+}
+
+inline float2 selectUvSet(float2 uv0, float2 uv1, float2 uv2, int uvSet)
+{
+    const int setIndex = sanitizeUvSet(uvSet);
+    if (setIndex == 1) return uv1;
+    if (setIndex == 2) return uv2;
+    return uv0;
+}
+
 inline void computeTangentBasis(const device Triangle* triangles,
                                 int                   triIndex,
+                                int                   uvSet,
                                 float3                N,
                                 thread float3&        T,
                                 thread float3&        B)
@@ -418,9 +607,9 @@ inline void computeTangentBasis(const device Triangle* triangles,
     float3 p1  = float3(tri.v1);
     float3 p2  = float3(tri.v2);
 
-    float2 uv0 = float2(tri.uv0);
-    float2 uv1 = float2(tri.uv1);
-    float2 uv2 = float2(tri.uv2);
+    float2 uv0 = triangleUvVertex(tri, uvSet, 0);
+    float2 uv1 = triangleUvVertex(tri, uvSet, 1);
+    float2 uv2 = triangleUvVertex(tri, uvSet, 2);
 
     float3 e1 = p1 - p0;
     float3 e2 = p2 - p0;
@@ -450,12 +639,13 @@ inline void computeTangentBasisInstanced(const device Triangle* triangles,
                                          const device SceneInstanceGPU* instances,
                                          int instanceIndex,
                                          int triIndex,
+                                         int uvSet,
                                          float3 N,
                                          thread float3& T,
                                          thread float3& B)
 {
     float3 localN = safeNormalize(float3(triangles[triIndex].normal));
-    computeTangentBasis(triangles, triIndex, localN, T, B);
+    computeTangentBasis(triangles, triIndex, uvSet, localN, T, B);
     if (instances != nullptr && instanceIndex >= 0)
     {
         const device SceneInstanceGPU &inst = instances[instanceIndex];
@@ -467,6 +657,7 @@ inline void computeTangentBasisInstanced(const device Triangle* triangles,
 }
 
 inline float3 sampleNormalMapInstanced(int normalTexIndex,
+                              int normalUvSet,
                               float2 uv,
                               float3 Ng,
                               const device Triangle* triangles,
@@ -485,7 +676,7 @@ inline float3 sampleNormalMapInstanced(int normalTexIndex,
     nTex = safeNormalize(nTex);
 
     float3 T, B;
-    computeTangentBasisInstanced(triangles, instances, instanceIndex, triIndex, Ng, T, B);
+    computeTangentBasisInstanced(triangles, instances, instanceIndex, triIndex, normalUvSet, Ng, T, B);
 
     float3 Ns = safeNormalize(nTex.x * T + nTex.y * B + nTex.z * Ng);
     return Ns;
@@ -857,7 +1048,9 @@ inline HitInfo traceRayBVH(const device BVHNode   *nodes,
     result.position      = float3(0.0f);
     result.normal        = float3(0.0f);
     result.color         = float3(1.0f);
-    result.uv            = float2(0.0f);
+    result.uv0           = float2(0.0f);
+    result.uv1           = float2(0.0f);
+    result.uv2           = float2(0.0f);
 
     result.emission  = float3(0.0f);
     result.metallic  = 0.0f;
@@ -956,10 +1149,9 @@ inline HitInfo traceRayBVH(const device BVHNode   *nodes,
 
                 // Интерполяция UV по барицентрикам
                 float wHit = 1.0f - uHit - vHit;
-                float2 uv0 = float2(tri.uv0);
-                float2 uv1 = float2(tri.uv1);
-                float2 uv2 = float2(tri.uv2);
-                result.uv  = uv0 * wHit + uv1 * uHit + uv2 * vHit;
+                result.uv0 = triangleSampleUvSet(tri, wHit, uHit, vHit, 0);
+                result.uv1 = triangleSampleUvSet(tri, wHit, uHit, vHit, 1);
+                result.uv2 = triangleSampleUvSet(tri, wHit, uHit, vHit, 2);
             }
 
             // Возврат к следующему узлу из стека
@@ -1267,7 +1459,9 @@ inline HitInfo traceRaySceneBVH(const device BVHNode *tlasNodes,
     result.emission = float3(0.0f);
     result.metallic = 0.0f;
     result.roughness = 0.5f;
-    result.uv = float2(0.0f);
+    result.uv0 = float2(0.0f);
+    result.uv1 = float2(0.0f);
+    result.uv2 = float2(0.0f);
 
     if (instances == nullptr || instanceCount == 0u)
         return result;
@@ -1397,6 +1591,45 @@ inline bool traceShadowSceneBVH(const device BVHNode *tlasNodes,
     return hit.hit && hit.t > 1.0e-4f && hit.t < maxDist;
 }
 
+inline bool traceShadowSceneBVHSkippingThin(const device BVHNode *tlasNodes,
+                                            const device BVHNode *meshNodes,
+                                            const device Triangle *tris,
+                                            const device SceneInstanceGPU *instances,
+                                            uint tlasNodeCount,
+                                            uint meshNodeCount,
+                                            uint instanceCount,
+                                            int tlasRootIndex,
+                                            const device MaterialGPU_PBR *materialsPBR,
+                                            uint materialPBRCount,
+                                            const Ray worldRay,
+                                            float maxDist)
+{
+    Ray ray = worldRay;
+    float remainingDist = (maxDist > 0.0f) ? maxDist : INFINITY;
+
+    for (int skip = 0; skip < 8; ++skip)
+    {
+        HitInfo hit = traceRaySceneBVH(tlasNodes, meshNodes, tris, instances,
+                                       tlasNodeCount, meshNodeCount, instanceCount,
+                                       tlasRootIndex, ray);
+        if (!(hit.hit && hit.t > 1.0e-4f && hit.t < remainingDist))
+            return false;
+
+        if (!materialHasPBRFlag(hit.materialIndex, MATERIAL_FLAG_THIN_EMISSIVE_SURFACE,
+                                materialsPBR, materialPBRCount))
+            return true;
+
+        const float advance = hit.t + SHADOW_EPS;
+        remainingDist -= advance;
+        if (remainingDist <= 1.0e-4f)
+            return false;
+
+        ray.origin = hit.position + ray.direction * SHADOW_EPS;
+    }
+
+    return false;
+}
+
 inline bool isShadowed(const device BVHNode  *bvhNodes,
                        const device Triangle *triangles,
                        uint                   nodeCount,
@@ -1424,6 +1657,70 @@ inline float powerHeuristic(float pdfA, float pdfB)
     return a2 / max(a2 + b2, 1e-8f);
 }
 
+inline float computeTrafficLightDirtFactor(MaterialGPU_PBR mp,
+                                           float2 uvBase,
+                                           const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
+{
+    if (mp.specialTex0Index < 0 || mp.specialTex1Index < 0 ||
+        uint(mp.specialTex0Index) >= MAX_BASE_TEX || uint(mp.specialTex1Index) >= MAX_BASE_TEX)
+        return 1.0f;
+
+    const float tiling = max(mp.specialScalar0, 1.0e-3f);
+    const float2 dirtUv = fract(uvBase * tiling);
+    const float dirt = luminance3(sceneTextures[uint(mp.specialTex0Index)].sample(g_texSampler, dirtUv).rgb);
+    const float opacityMask = luminance3(sceneTextures[uint(mp.specialTex1Index)].sample(g_texSampler, fract(uvBase)).rgb);
+    const float sharpness = max(0.25f, 1.0f + mp.specialScalar1 * 3.0f);
+    const float stainStrength = max(mp.specialScalar3, 0.0f);
+    const float dirtMask = pow(clamp01((1.0f - opacityMask) * dirt), sharpness);
+    return clamp(1.0f - dirtMask * 0.22f * stainStrength, 0.55f, 1.0f);
+}
+
+inline float3 evaluateMaterialEmissionPBR(MaterialGPU_PBR mp,
+                                          float3 emissiveBase,
+                                          float3 baseColorTex,
+                                          float2 uvBase,
+                                          float2 uvEmission,
+                                          float NdV,
+                                          const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
+{
+    if (mp.specialModel == SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT)
+    {
+        float3 emissive = emissiveBase;
+        if (mp.emissionTexIndex >= 0 && uint(mp.emissionTexIndex) < MAX_BASE_TEX)
+        {
+            const float3 eTex = sceneTextures[uint(mp.emissionTexIndex)].sample(g_texSampler, uvEmission).rgb;
+            emissive *= eTex;
+        }
+        return emissive;
+    }
+
+    float3 emissive = emissiveBase;
+    if (mp.emissionTexIndex >= 0 && uint(mp.emissionTexIndex) < MAX_BASE_TEX)
+    {
+        const float4 eTex = sceneTextures[uint(mp.emissionTexIndex)].sample(g_texSampler, uvEmission);
+        if ((mp.flags & MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK) != 0)
+            emissive *= sampleEmissiveMask(eTex);
+        else
+            emissive *= eTex.rgb;
+    }
+
+    if (mp.specialModel == SPECIAL_MATERIAL_UE_HEADLIGHT)
+    {
+        const float baseLuma = clamp01(luminance3(baseColorTex));
+        const float innerGlow = clamp01(mp.specialScalar0);
+        const float transparency = clamp01(mp.specialScalar4);
+        const float rim = pow(clamp01(1.0f - NdV), max(mp.specialScalar1, 1.0f));
+        const float dirtTransmission =
+            clamp(mp.specialScalar2 + baseLuma * max(mp.specialScalar5, 0.5f) + mp.specialScalar3,
+                  0.20f, 1.40f);
+        const float glowGain = (0.95f + innerGlow * 0.30f) * (0.75f + baseLuma * 0.35f);
+        const float rimGain = 1.0f + rim * 0.10f * transparency;
+        emissive *= max(dirtTransmission * glowGain * rimGain, 0.25f);
+    }
+
+    return emissive;
+}
+
 inline float3 triangleFaceNormal(const device Triangle &tri)
 {
     float3 e1 = float3(tri.v1) - float3(tri.v0);
@@ -1434,14 +1731,11 @@ inline float3 triangleFaceNormal(const device Triangle &tri)
     return normalize(float3(tri.normal));
 }
 
-inline float2 triangleSampleUV(const device Triangle &tri, float b0, float b1, float b2)
-{
-    return float2(tri.uv0) * b0 + float2(tri.uv1) * b1 + float2(tri.uv2) * b2;
-}
-
 inline float3 resolveTriangleEmissionTextured(const device Triangle *triangles,
                                               uint triIndex,
-                                              float2 uv,
+                                              float2 uv0,
+                                              float2 uv1,
+                                              float2 uv2,
                                               const device MaterialGPU *materials,
                                               uint materialCount,
                                               const device MaterialGPU_PBR *materialsPBR,
@@ -1455,21 +1749,21 @@ inline float3 resolveTriangleEmissionTextured(const device Triangle *triangles,
     if (materialsPBR != nullptr && materialPBRCount > 0u && matId >= 0 && uint(matId) < materialPBRCount)
     {
         MaterialGPU_PBR mp = materialsPBR[matId];
-        if (mp.emissionTexIndex >= 0 && uint(mp.emissionTexIndex) < MAX_BASE_TEX)
-        {
-            float4 eTex = sceneTextures[uint(mp.emissionTexIndex)].sample(g_texSampler, fract(uv));
-            if ((mp.flags & MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK) != 0)
-                emissive *= sampleEmissiveMask(eTex);
-            else
-                emissive *= eTex.rgb;
-        }
+        const float2 uvBase = fract(selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet));
+        const float2 uvEmission = fract(selectUvSet(uv0, uv1, uv2, mp.emissionUvSet));
+        float3 baseColorTex = float3(1.0f);
+        if (mp.baseColorTexIndex >= 0 && uint(mp.baseColorTexIndex) < MAX_BASE_TEX)
+            baseColorTex = sceneTextures[uint(mp.baseColorTexIndex)].sample(g_texSampler, uvBase).rgb;
+        emissive = evaluateMaterialEmissionPBR(mp, float3(tri.emission), baseColorTex, uvBase, uvEmission, 1.0f, sceneTextures);
     }
     else if (materials != nullptr && materialCount > 0u && matId >= 0 && uint(matId) < materialCount)
     {
-        int eTexId = materials[matId].emissionTexIndex;
+        MaterialGPU m = materials[matId];
+        int eTexId = m.emissionTexIndex;
         if (eTexId >= 0 && uint(eTexId) < MAX_BASE_TEX)
         {
-            emissive *= sceneTextures[uint(eTexId)].sample(g_texSampler, fract(uv)).rgb;
+            float2 uv = fract(selectUvSet(uv0, uv1, uv2, m.emissionUvSet));
+            emissive *= sceneTextures[uint(eTexId)].sample(g_texSampler, uv).rgb;
         }
     }
 
@@ -1544,7 +1838,9 @@ inline EmissiveLightSample sampleOneEmissiveTriangle(const device Triangle *tria
     s.selectionPdf = max(e.selectionPdf, 1e-8f);
     s.position = pos;
     s.normal = nrm;
-    s.uv = triangleSampleUV(tri, b0, b1, b2);
+    s.uv0 = triangleSampleUvSet(tri, b0, b1, b2, 0);
+    s.uv1 = triangleSampleUvSet(tri, b0, b1, b2, 1);
+    s.uv2 = triangleSampleUvSet(tri, b0, b1, b2, 2);
     return s;
 }
 
@@ -1766,7 +2062,7 @@ inline float3 sampleDirectEmissiveLightingTextured(float3 hitPos,
     if (traceShadowBVH(bvhNodes, triangles, nodeCount, rootIndex, shadowRay, maxDist))
         return float3(0.0f);
 
-    float3 Le = resolveTriangleEmissionTextured(triangles, ls.triIndex, ls.uv,
+    float3 Le = resolveTriangleEmissionTextured(triangles, ls.triIndex, ls.uv0, ls.uv1, ls.uv2,
                                                 materials, materialCount,
                                                 materialsPBR, materialPBRCount,
                                                 sceneTextures);
@@ -1976,8 +2272,7 @@ inline float3 computeLightingAtPoint(
 
         int   type    = light.type;
         float3 lp     = float3(light.position);
-        float3 ld     = normalize(float3(light.direction));
-        float  radius = light.radius;
+        float3 ld     = safeNormalize(float3(light.direction));
 
         float3 L;
         float  dist      = 1.0f;
@@ -1990,119 +2285,37 @@ inline float3 computeLightingAtPoint(
         }
         else
         {
-            float3 toLightCenter = lp - hitPos;
+            const uint seed1 = baseSeed ^ (0x9E3779B9u * (i * 3u + 1u));
+            const uint seed2 = baseSeed ^ (0x9E3779B9u * (i * 3u + 2u));
+            const uint seed3 = baseSeed ^ (0x9E3779B9u * (i * 3u + 3u));
 
-            if (radius > 0.0f)
-            {
-                uint seed1 = baseSeed ^ (0x9E3779B9u * (i * 2u + 1u));
-                uint seed2 = baseSeed ^ (0x9E3779B9u * (i * 2u + 2u));
+            if (type == LIGHT_TYPE_POINT || type == LIGHT_TYPE_SPOT)
+                lp = sampleFiniteLightPosition(light, seed1, seed2, seed3);
 
-                float u1 = rand01(seed1);
-                float u2 = rand01(seed2);
-
-                float z   = 1.0f - 2.0f * u1;
-                float phi = 2.0f * PI * u2;
-                float rxy = sqrt(max(0.0f, 1.0f - z * z));
-
-                float3 offset = float3(
-                    rxy * cos(phi),
-                    rxy * sin(phi),
-                    z
-                ) * radius;
-
-                float3 samplePos = lp + offset;
-                float3 toLight   = samplePos - hitPos;
-                dist = length(toLight);
-                if (dist <= 0.0f)
-                    continue;
-
-                L  = toLight / dist;
-                lp = samplePos;
-            }
-            else
-            {
-                dist = length(toLightCenter);
-                if (dist <= 0.0f)
-                    continue;
-                L = toLightCenter / dist;
-            }
+            float3 toLight = lp - hitPos;
+            dist = length(toLight);
+            if (dist <= 0.0f)
+                continue;
+            L = toLight / dist;
         }
 
         float NdL = dot(N, L);
         if (NdL <= 0.0f)
             continue;
 
-                float attenuation = 1.0f;
+        float attenuation = 1.0f;
         if (hasFinite)
         {
-            float falloffDist = max(dist * LIGHT_FALLOFF_DISTANCE_SCALE, 1e-3f);
-            float r2 = falloffDist * falloffDist;
-            if (r2 <= 0.0f)
+            attenuation = computeFiniteLightAttenuation(light, dist);
+            if (attenuation <= 0.0f)
                 continue;
-
-            // Базовый inverse-square
-            attenuation = INV_4PI / r2;
-
-            // Дополнительная форма затухания по AttenuationRadius
-            if (light.attenuationRadius > 0.0f)
-            {
-                float R = light.attenuationRadius * LIGHT_ATTENUATION_RADIUS_SCALE;
-
-                if (dist >= R)
-                    continue;
-
-                float s  = dist / R;
-                float s2 = s * s;
-
-                const float F = 1.0f; // тот же F, что и на CPU
-                float num = 1.0f - s2;
-                num *= num;           // (1 - s^2)^2
-                float den = 1.0f + F * s2;
-
-                float extra = (den > 0.0f) ? (num / den) : 0.0f;
-
-                attenuation *= extra;
-            }
         }
 
         float intensity = light.intensity * attenuation;
 
         if (type == LIGHT_TYPE_SPOT)
         {
-            float  spotSize  = max(light.spotSize, 1e-4f);
-            float  spotBlend = clamp01(light.spotBlend);
-
-            float outerAngle = 0.5f * spotSize;
-            float innerAngle = outerAngle * (1.0f - spotBlend);
-
-            float cosOuter = cos(outerAngle);
-            float cosInner = cos(innerAngle);
-
-            float3 dirToPoint = normalize(hitPos - lp);
-            float  cosTheta   = dot(ld, dirToPoint);
-
-            if (cosTheta <= 0.0f)
-                continue;
-
-            float spotFactor = 0.0f;
-            if (spotBlend <= 0.0f || cosInner <= cosOuter)
-            {
-                spotFactor = (cosTheta >= cosOuter) ? 1.0f : 0.0f;
-            }
-            else
-            {
-                if (cosTheta <= cosOuter)
-                    spotFactor = 0.0f;
-                else if (cosTheta >= cosInner)
-                    spotFactor = 1.0f;
-                else
-                {
-                    float t = (cosTheta - cosOuter) / (cosInner - cosOuter);
-                    t = clamp01(t);
-                    spotFactor = t * t;
-                }
-            }
-
+            float spotFactor = computeSpotFactor(light, lp, hitPos);
             intensity *= spotFactor;
             if (intensity <= 0.0f)
                 continue;
@@ -2216,10 +2429,13 @@ inline float3 sampleDirectEmissiveLightingTexturedInstanced(float3 hitPos,
     Ray shadowRay;
     shadowRay.origin = hitPos + Ng * SHADOW_EPS;
     shadowRay.direction = L;
-    if (traceShadowSceneBVH(tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex, shadowRay, maxDist))
+    if (traceShadowSceneBVHSkippingThin(tlasNodes, meshNodes, triangles, instances,
+                                        tlasNodeCount, meshNodeCount, instanceCount,
+                                        rootIndex, materialsPBR, materialPBRCount,
+                                        shadowRay, maxDist))
         return float3(0.0f);
 
-    float3 Le = resolveTriangleEmissionTextured(triangles, ls.triIndex, ls.uv,
+    float3 Le = resolveTriangleEmissionTextured(triangles, ls.triIndex, ls.uv0, ls.uv1, ls.uv2,
                                                 materials, materialCount,
                                                 materialsPBR, materialPBRCount,
                                                 sceneTextures);
@@ -2259,6 +2475,8 @@ inline float3 computeLightingAtPointInstanced(
     int                           rootIndex,
     const device LightGPU        *lights,
     uint                          lightCount,
+    const device MaterialGPU_PBR *materialsPBR,
+    uint                          materialPBRCount,
     uint                          baseSeed)
 {
     float3 result = float3(0.0f);
@@ -2285,8 +2503,7 @@ inline float3 computeLightingAtPointInstanced(
 
         int   type    = light.type;
         float3 lp     = float3(light.position);
-        float3 ld     = normalize(float3(light.direction));
-        float  radius = light.radius;
+        float3 ld     = safeNormalize(float3(light.direction));
 
         float3 L;
         float  dist      = 1.0f;
@@ -2299,119 +2516,37 @@ inline float3 computeLightingAtPointInstanced(
         }
         else
         {
-            float3 toLightCenter = lp - hitPos;
+            const uint seed1 = baseSeed ^ (0x9E3779B9u * (i * 3u + 1u));
+            const uint seed2 = baseSeed ^ (0x9E3779B9u * (i * 3u + 2u));
+            const uint seed3 = baseSeed ^ (0x9E3779B9u * (i * 3u + 3u));
 
-            if (radius > 0.0f)
-            {
-                uint seed1 = baseSeed ^ (0x9E3779B9u * (i * 2u + 1u));
-                uint seed2 = baseSeed ^ (0x9E3779B9u * (i * 2u + 2u));
+            if (type == LIGHT_TYPE_POINT || type == LIGHT_TYPE_SPOT)
+                lp = sampleFiniteLightPosition(light, seed1, seed2, seed3);
 
-                float u1 = rand01(seed1);
-                float u2 = rand01(seed2);
-
-                float z   = 1.0f - 2.0f * u1;
-                float phi = 2.0f * PI * u2;
-                float rxy = sqrt(max(0.0f, 1.0f - z * z));
-
-                float3 offset = float3(
-                    rxy * cos(phi),
-                    rxy * sin(phi),
-                    z
-                ) * radius;
-
-                float3 samplePos = lp + offset;
-                float3 toLight   = samplePos - hitPos;
-                dist = length(toLight);
-                if (dist <= 0.0f)
-                    continue;
-
-                L  = toLight / dist;
-                lp = samplePos;
-            }
-            else
-            {
-                dist = length(toLightCenter);
-                if (dist <= 0.0f)
-                    continue;
-                L = toLightCenter / dist;
-            }
+            float3 toLight = lp - hitPos;
+            dist = length(toLight);
+            if (dist <= 0.0f)
+                continue;
+            L = toLight / dist;
         }
 
         float NdL = dot(N, L);
         if (NdL <= 0.0f)
             continue;
 
-                float attenuation = 1.0f;
+        float attenuation = 1.0f;
         if (hasFinite)
         {
-            float falloffDist = max(dist * LIGHT_FALLOFF_DISTANCE_SCALE, 1e-3f);
-            float r2 = falloffDist * falloffDist;
-            if (r2 <= 0.0f)
+            attenuation = computeFiniteLightAttenuation(light, dist);
+            if (attenuation <= 0.0f)
                 continue;
-
-            // Базовый inverse-square
-            attenuation = INV_4PI / r2;
-
-            // Дополнительная форма затухания по AttenuationRadius
-            if (light.attenuationRadius > 0.0f)
-            {
-                float R = light.attenuationRadius * LIGHT_ATTENUATION_RADIUS_SCALE;
-
-                if (dist >= R)
-                    continue;
-
-                float s  = dist / R;
-                float s2 = s * s;
-
-                const float F = 1.0f; // тот же F, что и на CPU
-                float num = 1.0f - s2;
-                num *= num;           // (1 - s^2)^2
-                float den = 1.0f + F * s2;
-
-                float extra = (den > 0.0f) ? (num / den) : 0.0f;
-
-                attenuation *= extra;
-            }
         }
 
         float intensity = light.intensity * attenuation;
 
         if (type == LIGHT_TYPE_SPOT)
         {
-            float  spotSize  = max(light.spotSize, 1e-4f);
-            float  spotBlend = clamp01(light.spotBlend);
-
-            float outerAngle = 0.5f * spotSize;
-            float innerAngle = outerAngle * (1.0f - spotBlend);
-
-            float cosOuter = cos(outerAngle);
-            float cosInner = cos(innerAngle);
-
-            float3 dirToPoint = normalize(hitPos - lp);
-            float  cosTheta   = dot(ld, dirToPoint);
-
-            if (cosTheta <= 0.0f)
-                continue;
-
-            float spotFactor = 0.0f;
-            if (spotBlend <= 0.0f || cosInner <= cosOuter)
-            {
-                spotFactor = (cosTheta >= cosOuter) ? 1.0f : 0.0f;
-            }
-            else
-            {
-                if (cosTheta <= cosOuter)
-                    spotFactor = 0.0f;
-                else if (cosTheta >= cosInner)
-                    spotFactor = 1.0f;
-                else
-                {
-                    float t = (cosTheta - cosOuter) / (cosInner - cosOuter);
-                    t = clamp01(t);
-                    spotFactor = t * t;
-                }
-            }
-
+            float spotFactor = computeSpotFactor(light, lp, hitPos);
             intensity *= spotFactor;
             if (intensity <= 0.0f)
                 continue;
@@ -2432,9 +2567,10 @@ inline float3 computeLightingAtPointInstanced(
         Ray shadowRay;
         shadowRay.origin = shadowOrigin;
         shadowRay.direction  = L;
-        if (traceShadowSceneBVH(tlasNodes, meshNodes, triangles, instances,
-                                tlasNodeCount, meshNodeCount, instanceCount,
-                                rootIndex, shadowRay, maxDist))
+        if (traceShadowSceneBVHSkippingThin(tlasNodes, meshNodes, triangles, instances,
+                                            tlasNodeCount, meshNodeCount, instanceCount,
+                                            rootIndex, materialsPBR, materialPBRCount,
+                                            shadowRay, maxDist))
         {
             continue;
         }
@@ -2573,10 +2709,13 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             float3 N = NgRaw;
 
             float3 baseColor = hit.color;
-            float3 emissive  = hit.emission * 3.0f;
+            float3 emissive  = hit.emission;
 
             int    matId = hit.materialIndex;
-            float2 uv    = fract(hit.uv);
+            float2 uv0   = hit.uv0;
+            float2 uv1   = hit.uv1;
+            float2 uv2   = hit.uv2;
+            float2 uv    = fract(uv0);
 
             float  metallic  = clamp(hit.metallic, 0.0f, 1.0f);
             float  roughness = clamp(hit.roughness, 0.02f, 0.98f);
@@ -2599,24 +2738,24 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             if (hasMatPBR)
             {
                 MaterialGPU_PBR mp = materialsPBR[matId];
+                const float2 uvBase      = fract(selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet));
+                const float2 uvEmission  = fract(selectUvSet(uv0, uv1, uv2, mp.emissionUvSet));
+                const float2 uvNormal    = fract(selectUvSet(uv0, uv1, uv2, mp.normalUvSet));
+                const float2 uvOrm       = fract(selectUvSet(uv0, uv1, uv2, mp.ormUvSet));
+                const float2 uvRoughness = fract(selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet));
+                const float2 uvMetallic  = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet));
+                const float2 uvOcclusion = fract(selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet));
+                uv = uvBase;
                 if (mp.baseColorTexIndex >= 0 && uint(mp.baseColorTexIndex) < MAX_BASE_TEX)
                 {
-                    float3 texBC = sceneTextures[uint(mp.baseColorTexIndex)].sample(g_texSampler, uv).rgb;
+                    float3 texBC = sceneTextures[uint(mp.baseColorTexIndex)].sample(g_texSampler, uvBase).rgb;
                     baseColorTexOnly = texBC;
                     hasBaseColorTex  = true;
                     baseColor = baseColorFactor * texBC;
                 }
-                if (mp.emissionTexIndex >= 0 && uint(mp.emissionTexIndex) < MAX_BASE_TEX)
-                {
-                    float4 eTex = sceneTextures[uint(mp.emissionTexIndex)].sample(g_texSampler, uv);
-                    if ((mp.flags & MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK) != 0)
-                        emissive *= sampleEmissiveMask(eTex);
-                    else
-                        emissive *= eTex.rgb;
-                }
                 if (mp.ormTexIndex >= 0 && uint(mp.ormTexIndex) < MAX_BASE_TEX)
                 {
-                    float3 orm = sceneTextures[uint(mp.ormTexIndex)].sample(g_texSampler, uv).rgb;
+                    float3 orm = sceneTextures[uint(mp.ormTexIndex)].sample(g_texSampler, uvOrm).rgb;
                     hasORMTex = true;
                     ao = clamp01(orm.r);
                     roughness = clamp(orm.g, 0.02f, 0.98f);
@@ -2625,44 +2764,59 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 if (mp.roughnessTexIndex >= 0 && uint(mp.roughnessTexIndex) < MAX_BASE_TEX)
                 {
                     hasRoughnessTex = true;
-                    roughness = clamp(sceneTextures[uint(mp.roughnessTexIndex)].sample(g_texSampler, uv).r, 0.02f, 0.98f);
+                    roughness = clamp(sceneTextures[uint(mp.roughnessTexIndex)].sample(g_texSampler, uvRoughness).r, 0.02f, 0.98f);
                 }
                 if (mp.metallicTexIndex >= 0 && uint(mp.metallicTexIndex) < MAX_BASE_TEX)
                 {
                     hasMetallicTex = true;
-                    metallic = clamp01(sceneTextures[uint(mp.metallicTexIndex)].sample(g_texSampler, uv).r);
+                    metallic = clamp01(sceneTextures[uint(mp.metallicTexIndex)].sample(g_texSampler, uvMetallic).r);
                 }
                 if (mp.occlusionTexIndex >= 0 && uint(mp.occlusionTexIndex) < MAX_BASE_TEX)
                 {
-                    ao = clamp01(sceneTextures[uint(mp.occlusionTexIndex)].sample(g_texSampler, uv).r);
+                    ao = clamp01(sceneTextures[uint(mp.occlusionTexIndex)].sample(g_texSampler, uvOcclusion).r);
                 }
                 Ng = N;
                 if (mp.normalTexIndex >= 0 && uint(mp.normalTexIndex) < MAX_BASE_TEX)
                 {
                     hasNormalTex = true;
-                    Ns = sampleNormalMapInstanced(mp.normalTexIndex, uv, Ng, triangles, instances, hit.instanceIndex, hit.triIndex, sceneTextures);
+                    Ns = sampleNormalMapInstanced(mp.normalTexIndex, mp.normalUvSet, uvNormal, Ng, triangles, instances, hit.instanceIndex, hit.triIndex, sceneTextures);
                 }
                 else
                 {
                     Ns = Ng;
                 }
+
+                if (mp.specialModel == SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT)
+                {
+                    const float dirtFactor = computeTrafficLightDirtFactor(mp, uvBase, sceneTextures);
+                    const float dirtBlend = mix(1.0f, dirtFactor, 0.35f);
+                    baseColor *= dirtBlend;
+                    roughness = clamp(mix(roughness, max(mp.specialScalar2, roughness), (1.0f - dirtFactor) * 0.5f), 0.02f, 0.98f);
+                }
+
+                const float rawNdV = max(dot(NgRaw, normalize(-ray.direction)), 0.0f);
+                emissive = evaluateMaterialEmissionPBR(mp, hit.emission, baseColorTexOnly, uvBase, uvEmission, rawNdV, sceneTextures);
             }
             else
             {
                 if (materials != nullptr && materialCount > 0u && matId >= 0 && uint(matId) < materialCount)
                 {
-                    int texId = materials[matId].baseColorTexIndex;
+                    MaterialGPU m = materials[matId];
+                    const float2 uvBase = fract(selectUvSet(uv0, uv1, uv2, m.baseColorUvSet));
+                    const float2 uvEmission = fract(selectUvSet(uv0, uv1, uv2, m.emissionUvSet));
+                    uv = uvBase;
+                    int texId = m.baseColorTexIndex;
                     if (texId >= 0 && uint(texId) < MAX_BASE_TEX)
                     {
-                        float3 texBC = sceneTextures[uint(texId)].sample(g_texSampler, uv).rgb;
+                        float3 texBC = sceneTextures[uint(texId)].sample(g_texSampler, uvBase).rgb;
                         baseColorTexOnly = texBC;
                         hasBaseColorTex = true;
                         baseColor = baseColorFactor * texBC;
                     }
-                    int eTexId = materials[matId].emissionTexIndex;
+                    int eTexId = m.emissionTexIndex;
                     if (eTexId >= 0 && uint(eTexId) < MAX_BASE_TEX)
                     {
-                        emissive *= sceneTextures[uint(eTexId)].sample(g_texSampler, uv).rgb;
+                        emissive *= sceneTextures[uint(eTexId)].sample(g_texSampler, uvEmission).rgb;
                     }
                 }
                 Ng = N;
@@ -2670,6 +2824,30 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             }
 
             emissivePreExposure = emissive;
+            emissive *= EMISSION_VISIBLE_EXPOSURE_GPU;
+
+            const bool isThinEmissiveSurface =
+                materialHasPBRFlag(matId, MATERIAL_FLAG_THIN_EMISSIVE_SURFACE,
+                                   materialsPBR, materialPBRCount);
+
+            float3 emitted = emissive;
+            if (bounce > 0 && prevWasBSDFSample != 0u && luminance3(emitted) > 1e-6f)
+            {
+                float pdfLight = emissiveLightPdfForHit(prevSurfacePos, hitPos, NgRaw, uint(hit.triIndex),
+                                                        emissiveTriangles, emissiveTriangleCount);
+                if (pdfLight > 1e-8f)
+                {
+                    float mis = powerHeuristic(prevBsdfPdf, pdfLight);
+                    emitted *= mis;
+                }
+            }
+
+            if (isThinEmissiveSurface)
+            {
+                radiance += throughput * emitted;
+                ray.origin = hitPos + ray.direction * EPSILON_POS;
+                continue;
+            }
 
             if (bounce == 0)
             {
@@ -2712,8 +2890,6 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 }
             }
 
-            emissive *= EMISSION_VISIBLE_EXPOSURE_GPU;
-
             if (dot(Ng, ray.direction) > 0.0f) Ng = -Ng;
             if (dot(Ns, ray.direction) > 0.0f) Ns = -Ns;
             N = Ns;
@@ -2729,7 +2905,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             uint lightSeed = seedBase ^ (0x9E3779B9u * (uint(bounce) + 1u));
             float3 directExplicit = computeLightingAtPointInstanced(hitPos, N, Ng, baseColor, metallic, roughness, V,
                                                            tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex,
-                                                           lights, lightCount, lightSeed);
+                                                           lights, lightCount, materialsPBR, materialPBRCount, lightSeed);
             float3 directEmissive = sampleDirectEmissiveLightingTexturedInstanced(hitPos, N, Ng, V, uint(hit.triIndex), uint(hit.instanceIndex),
                                                                          baseColor, metallic, roughness,
                                                                          tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex,
@@ -2740,18 +2916,6 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                                          seedBase ^ (0x7000u + uint(bounce) * 17u),
                                                                          seedBase ^ (0x7001u + uint(bounce) * 17u),
                                                                          seedBase ^ (0x7002u + uint(bounce) * 17u));
-
-            float3 emitted = emissive;
-            if (bounce > 0 && prevWasBSDFSample != 0u && luminance3(emitted) > 1e-6f)
-            {
-                float pdfLight = emissiveLightPdfForHit(prevSurfacePos, hitPos, NgRaw, uint(hit.triIndex),
-                                                        emissiveTriangles, emissiveTriangleCount);
-                if (pdfLight > 1e-8f)
-                {
-                    float mis = powerHeuristic(prevBsdfPdf, pdfLight);
-                    emitted *= mis;
-                }
-            }
 
             radiance += throughput * (directExplicit + directEmissive + emitted);
 
@@ -2856,16 +3020,91 @@ inline float3 sampleCombined(texture2d<float, access::sample> hdrTex,
     return hdrTex.sample(g_postSampler, uv).rgb;
 }
 
+inline float computeAirDustRangeAttenuation(float dist, float radius)
+{
+    if (radius <= 1.0e-3f)
+        return 1.0f;
+    if (dist >= radius)
+        return 0.0f;
+
+    float s = dist / radius;
+    float s2 = s * s;
+    float num = (1.0f - s2) * (1.0f - s2);
+    float den = 1.0f + s2;
+    return (den > 0.0f) ? (num / den) : 0.0f;
+}
+
+inline float3 reconstructPostRayDir(float2 uv, CameraData cam)
+{
+    float tanHalfFov = tan(max(cam.fovY, 1.0e-4f) * 0.5f);
+    float sx = (uv.x * 2.0f - 1.0f) * tanHalfFov * max(cam.aspectRatio, 1.0e-4f);
+    float sy = (1.0f - uv.y * 2.0f) * tanHalfFov;
+    return normalize(float3(cam.forward) + float3(cam.right) * sx + float3(cam.up) * sy);
+}
+
+inline float computeAirDustDensityAtPoint(float3 p, AirDustVolumeGPU volume)
+{
+    float3 extent = max(float3(volume.extentX, volume.extentY, volume.extentZ), float3(1.0f));
+    float3 q = (p - float3(volume.centerX, volume.centerY, volume.centerZ)) / extent;
+    float r2 = dot(q, q);
+    float core = clamp(1.0f - r2, 0.0f, 1.0f);
+    return core * core;
+}
+
+inline float3 computeAirDustLighting(float2 uv,
+                                     float depth,
+                                     CameraData cam,
+                                     const device AirDustVolumeGPU *airDustVolumes,
+                                     uint airDustVolumeCount)
+{
+    if (airDustVolumes == nullptr || airDustVolumeCount == 0u || depth <= 0.0f || depth >= 1.0e29f)
+        return float3(0.0f);
+
+    float3 rayDir = reconstructPostRayDir(uv, cam);
+    float3 camPos = float3(cam.position);
+    float3 accum = float3(0.0f);
+
+    for (uint i = 0; i < airDustVolumeCount; ++i)
+    {
+        AirDustVolumeGPU volume = airDustVolumes[i];
+        float3 center = float3(volume.centerX, volume.centerY, volume.centerZ);
+        float tClosest = clamp(dot(center - camPos, rayDir), 0.0f, depth);
+        float3 samplePos = camPos + rayDir * tClosest;
+        float density = computeAirDustDensityAtPoint(samplePos, volume) * max(volume.density, 0.0f);
+        if (density <= 1.0e-4f)
+            continue;
+
+        float3 lightPos = float3(volume.lightPosX, volume.lightPosY, volume.lightPosZ);
+        float3 toLight = lightPos - samplePos;
+        float lightDist2 = dot(toLight, toLight);
+        if (lightDist2 <= 1.0e-4f)
+            continue;
+
+        float lightDist = sqrt(lightDist2);
+        float3 lightDir = toLight / lightDist;
+        float rangeAtt = computeAirDustRangeAttenuation(lightDist, max(volume.lightRadius, 1.0f));
+        if (rangeAtt <= 0.0f)
+            continue;
+
+        float forwardScatter = pow(max(dot(-rayDir, lightDir), 0.0f), mix(3.0f, 1.3f, clamp(volume.anisotropy, 0.0f, 0.95f)));
+        float phase = 0.20f + 0.80f * forwardScatter;
+        float intensity = max(volume.lightIntensity, 0.0f) * rangeAtt / max(lightDist2, 1.0f);
+        float3 lightColor = float3(volume.lightColorX, volume.lightColorY, volume.lightColorZ);
+        accum += lightColor * (intensity * density * phase * 0.06f);
+    }
+
+    return accum;
+}
+
 inline float computeFogAmount(float depth,
                               float2 uv,
                               PostProcessParams pp)
 {
-    float nearP = max(pp.nearPlane, 1e-4f);
-    float farP  = max(pp.farPlane, nearP + 1e-3f);
-    float depthN = clamp((depth - nearP) / (farP - nearP), 0.0f, 1.0f);
-
     float density = max(pp.fogDensity, 0.0f) * max(pp.fogExtinctionScale, 0.0f);
-    float distFog = 1.0f - exp(-depthN * density * 3.0f);
+    // Scene export is effectively in UE world units (centimeter-like). Using depth normalized by far plane
+    // underestimates fog massively on large cameras, so drive fog from actual scene distance instead.
+    float depthWorld = max(depth, 0.0f) * 0.0018f;
+    float distFog = 1.0f - exp(-depthWorld * density);
 
     float heightT = clamp(1.0f - uv.y, 0.0f, 1.0f);
     float heightFog = exp(-max(pp.fogHeightFalloff, 0.0f) * heightT * 1.1f);
@@ -3187,13 +3426,17 @@ kernel void BloomBlurKernelV(
 // KERNEL 6: final post-process / fog / tonemap (reads depth from hdr.a)
 // ==================================================
 kernel void PostProcessKernel(
-    constant PostProcessParams       *ppPtr   [[buffer(0)]],
-    texture2d<float, access::sample>  hdrTex   [[texture(0)]],
-    texture2d<float, access::sample>  bloomTex [[texture(1)]],
-    texture2d<float, access::write>   outTex   [[texture(2)]],
+    constant PostProcessParams       *ppPtr              [[buffer(0)]],
+    const device AirDustVolumeGPU    *airDustVolumes     [[buffer(1)]],
+    const device uint                *airDustVolumeCount [[buffer(2)]],
+    constant CameraData              *camPtr             [[buffer(3)]],
+    texture2d<float, access::sample>  hdrTex             [[texture(0)]],
+    texture2d<float, access::sample>  bloomTex           [[texture(1)]],
+    texture2d<float, access::write>   outTex             [[texture(2)]],
     uint2 gid [[thread_position_in_grid]])
 {
     const PostProcessParams pp = *ppPtr;
+    const CameraData cam = *camPtr;
     if (gid.x >= uint(pp.width) || gid.y >= uint(pp.height))
         return;
 
@@ -3236,6 +3479,9 @@ kernel void PostProcessKernel(
         float3 fogLit = fogColor * fogAlbedo * (1.0f + volumetricBoost);
         color = mix(color, fogLit, fogAmount);
     }
+
+    if (hasSceneHit && airDustVolumes != nullptr && airDustVolumeCount != nullptr && *airDustVolumeCount > 0u)
+        color += computeAirDustLighting(uv, depth, cam, airDustVolumes, *airDustVolumeCount);
 
     float3 bloom = bloomTex.sample(g_postSampler, uv).rgb;
     color += bloom * max(pp.bloomIntensity, 0.0f);

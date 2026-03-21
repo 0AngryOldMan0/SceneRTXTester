@@ -73,6 +73,17 @@ struct SceneMetaMaterial
     float opacity          = 1.0f;  // decal/translucency helper from scalar param "Opacity Multi"
     int32_t blendMode      = 0;     // UE EBlendMode, 0=Opaque, 1=Masked, 2+=translucent-like
     bool    twoSided       = false;
+    bool    thinEmissiveSurface = false;
+    bool    emissionUseAlphaMask = false;
+    int32_t specialModel = 0;
+    int32_t specialTex0Index = -1;
+    int32_t specialTex1Index = -1;
+    float   specialScalar0 = 0.0f;
+    float   specialScalar1 = 0.0f;
+    float   specialScalar2 = 0.0f;
+    float   specialScalar3 = 0.0f;
+    float   specialScalar4 = 0.0f;
+    float   specialScalar5 = 0.0f;
 
     // Decal-oriented material approximation (DBuffer-style subset).
     // These values are CPU-side only; MetalRenderer compacts them into DecalGPU.
@@ -89,6 +100,8 @@ struct SceneMetaMaterial
     // Indices into SceneMetaResources::baseColorTextures (sRGB), -1 if absent
     int32_t baseColorTexIndex = -1;
     int32_t emissionTexIndex  = -1;
+    int32_t baseColorUvSet    = 0;
+    int32_t emissionUvSet     = 0;
 
     // Indices into SceneMetaResources::linearTextures (linear UNORM), -1 if absent
     int32_t normalTexIndex    = -1;
@@ -96,6 +109,11 @@ struct SceneMetaMaterial
     int32_t roughnessTexIndex = -1;
     int32_t metallicTexIndex  = -1;
     int32_t occlusionTexIndex = -1;
+    int32_t normalUvSet       = 0;
+    int32_t ormUvSet          = 0;
+    int32_t roughnessUvSet    = 0;
+    int32_t metallicUvSet     = 0;
+    int32_t occlusionUvSet    = 0;
 
     SceneMetaOrmChannels ormChannels{};
 };
@@ -136,6 +154,18 @@ struct SceneMetaDecal
     float fadeScreenSize = 0.0f;
 };
 
+struct SceneMetaAirDustVolume
+{
+    std::string name;
+    std::string actorPath;
+    Vec3 position{0.0f, 0.0f, 0.0f};
+    Vec3 extent{0.0f, 0.0f, 0.0f};
+    Vec3 linkedLightPosition{0.0f, 0.0f, 0.0f};
+    Vec3 linkedLightColor{1.0f, 1.0f, 1.0f};
+    float linkedLightIntensity = 0.0f;
+    float linkedLightRadius = 0.0f;
+};
+
 struct SceneMetaResources
 {
     // Unique absolute paths to sRGB textures (base color + emission), used in Metal texture array.
@@ -156,6 +186,9 @@ struct SceneMetaResources
 
     // Projected decals from meta (UE DecalActor / DecalComponent).
     std::vector<SceneMetaDecal> decals;
+
+    // Localized dust / haze volumes reconstructed from exported particle helpers like P_AirDust_01.
+    std::vector<SceneMetaAirDustVolume> airDustVolumes;
 
     // Optional global settings
     bool hasPostProcess = false;

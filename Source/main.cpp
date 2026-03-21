@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cctype>
 #include <limits>
+#include <cmath>
 
 #include "../Headers/Classes/SceneLoaderFactory.h"
 #include "../Headers/Classes/Scene.h"
@@ -152,6 +153,59 @@ namespace
     #else
     #error "Не включён ни один рендерер: USE_HIP_RENDERER / USE_METAL_RENDERER / USE_CUDA_RENDERER"
     #endif
+    }
+
+    struct RenderDimensions
+    {
+        int width = 1920;
+        int height = 1080;
+    };
+
+    static RenderDimensions ComputeRenderDimensionsForCamera(const SceneMetaCameraInfo &metaCam,
+                                                             int requestedWidth,
+                                                             int requestedHeight)
+    {
+        RenderDimensions dims{
+            std::max(1, requestedWidth),
+            std::max(1, requestedHeight)
+        };
+
+        if (!metaCam.constrainAspectRatio ||
+            !std::isfinite(metaCam.aspectRatio) ||
+            metaCam.aspectRatio <= 0.0f)
+        {
+            return dims;
+        }
+
+        const float targetAspect =
+            static_cast<float>(dims.width) / static_cast<float>(dims.height);
+        const float cameraAspect = metaCam.aspectRatio;
+
+        if (std::fabs(cameraAspect - targetAspect) <= 1.0e-4f)
+            return dims;
+
+        if (cameraAspect > targetAspect)
+        {
+            dims.height = std::max(1, static_cast<int>(std::lround(
+                static_cast<double>(dims.width) / static_cast<double>(cameraAspect))));
+        }
+        else
+        {
+            dims.width = std::max(1, static_cast<int>(std::lround(
+                static_cast<double>(dims.height) * static_cast<double>(cameraAspect))));
+        }
+
+        dims.width = std::min(dims.width, std::max(1, requestedWidth));
+        dims.height = std::min(dims.height, std::max(1, requestedHeight));
+        return dims;
+    }
+
+    static void SetRendererImageSize(RenderManager &renderManager,
+                                     int width,
+                                     int height)
+    {
+        for (auto &renderer : renderManager.getRenderers())
+            renderer->setImageSize(width, height);
     }
 }
 
@@ -323,7 +377,23 @@ int main(int argc, char **argv)
 
             for (std::size_t ci = beginCamera; ci < endCamera; ++ci)
             {
-                ApplyMetaCameraToCamera(metaCameras[ci], cam, imageWidth, imageHeight);
+                const RenderDimensions renderDims =
+                    ComputeRenderDimensionsForCamera(metaCameras[ci], imageWidth, imageHeight);
+
+                SetRendererImageSize(renderManager, renderDims.width, renderDims.height);
+                ApplyMetaCameraToCamera(metaCameras[ci], cam, renderDims.width, renderDims.height);
+
+                if (renderDims.width != imageWidth || renderDims.height != imageHeight)
+                {
+                    const std::streamsize oldPrecision = std::cout.precision();
+                    const std::ios::fmtflags oldFlags = std::cout.flags();
+                    std::cout << "Camera <" << ci << ">: constrained aspect "
+                              << std::fixed << std::setprecision(3) << metaCameras[ci].aspectRatio
+                              << ", render size " << renderDims.width << "x" << renderDims.height
+                              << " instead of " << imageWidth << "x" << imageHeight << "\n";
+                    std::cout.flags(oldFlags);
+                    std::cout.precision(oldPrecision);
+                }
 
                 const std::string camName = MakeSafeName(metaCameras[ci].name);
                 const fs::path base =

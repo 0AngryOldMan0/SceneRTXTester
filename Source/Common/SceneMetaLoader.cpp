@@ -6,6 +6,9 @@
 
 #include <../ExternalLibs/json-develop/single_include/nlohmann/json.hpp>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "../ExternalLibs/stb-master/stb_image.h"
+
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
@@ -22,7 +25,69 @@ namespace
     using json = nlohmann::json;
 
     constexpr float kPI = 3.14159265358979323846f;
+    constexpr int kSpecialMaterialUEEmissiveHeadlight = 1;
+    constexpr int kSpecialMaterialUETrafficLight = 2;
     static bool ReadBoolFieldLoose(const json& obj, const char* key, bool def);
+
+    struct CpuImageRGBA
+    {
+        int width = 0;
+        int height = 0;
+        std::vector<uint8_t> pixels;
+        float maxRgb = 0.0f;
+        float alphaMin = 1.0f;
+        float alphaMax = 1.0f;
+
+        bool valid() const
+        {
+            return width > 0 && height > 0 && pixels.size() == (std::size_t)width * (std::size_t)height * 4u;
+        }
+    };
+
+    struct TextureImageCache
+    {
+        const CpuImageRGBA* load(const std::string& path)
+        {
+            auto it = images.find(path);
+            if (it != images.end())
+                return it->second.valid() ? &it->second : nullptr;
+
+            CpuImageRGBA image{};
+            int w = 0, h = 0, comp = 0;
+            stbi_uc* data = stbi_load(path.c_str(), &w, &h, &comp, 4);
+            if (data != nullptr && w > 0 && h > 0)
+            {
+                image.width = w;
+                image.height = h;
+                const std::size_t pixelCount = (std::size_t)w * (std::size_t)h;
+                image.pixels.assign(data, data + pixelCount * 4u);
+
+                float maxRgb = 0.0f;
+                float alphaMin = 1.0f;
+                float alphaMax = 0.0f;
+                for (std::size_t pi = 0; pi < pixelCount; ++pi)
+                {
+                    const float r = image.pixels[pi * 4u + 0u] / 255.0f;
+                    const float g = image.pixels[pi * 4u + 1u] / 255.0f;
+                    const float b = image.pixels[pi * 4u + 2u] / 255.0f;
+                    const float a = image.pixels[pi * 4u + 3u] / 255.0f;
+                    maxRgb = std::max(maxRgb, std::max(r, std::max(g, b)));
+                    alphaMin = std::min(alphaMin, a);
+                    alphaMax = std::max(alphaMax, a);
+                }
+                image.maxRgb = maxRgb;
+                image.alphaMin = alphaMin;
+                image.alphaMax = alphaMax;
+            }
+            if (data)
+                stbi_image_free(data);
+
+            auto [insertedIt, _] = images.emplace(path, std::move(image));
+            return insertedIt->second.valid() ? &insertedIt->second : nullptr;
+        }
+
+        std::unordered_map<std::string, CpuImageRGBA> images;
+    };
 
     static Vec3 ReadVec3(const json& j, const Vec3& def)
     {
@@ -552,6 +617,249 @@ static bool IsSpecialVisibleEmissiveSurface(std::string_view materialNameLower,
         return std::string{};
     }
 
+    static int ClampUvSetIndex(int value)
+    {
+        return std::clamp(value, 0, 2);
+    }
+
+    static int ParseSceneUvSetValue(float value, int def)
+    {
+        if (!std::isfinite(value))
+            return def;
+
+        const float rounded = std::round(value);
+        if (std::abs(value - rounded) > 1.0e-4f)
+            return def;
+
+        const int uvSet = static_cast<int>(rounded);
+        if (uvSet < 0 || uvSet > 2)
+            return def;
+        return uvSet;
+    }
+
+    static int ReadSceneUvSetParam(const json& obj,
+                                   std::initializer_list<const char*> wantedNames,
+                                   int def)
+    {
+        const float sentinel = -9999.0f;
+        const float value = ReadSceneScalarParam(obj, wantedNames, sentinel);
+        if (value == sentinel)
+            return def;
+        return ParseSceneUvSetValue(value, def);
+    }
+
+    static float Saturate(float x)
+    {
+        return std::clamp(x, 0.0f, 1.0f);
+    }
+
+    static float WrapUv(float x)
+    {
+        const float wrapped = x - std::floor(x);
+        return (wrapped >= 1.0f) ? 0.0f : wrapped;
+    }
+
+    static float SrgbToLinearScalar(float c)
+    {
+        c = Saturate(c);
+        if (c <= 0.04045f)
+            return c / 12.92f;
+        return std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+
+    static Vec3 SrgbToLinear(const Vec3& c)
+    {
+        return Vec3{
+            SrgbToLinearScalar(c.x),
+            SrgbToLinearScalar(c.y),
+            SrgbToLinearScalar(c.z)
+        };
+    }
+
+    static float Vec3Length(const Vec3& v)
+    {
+        return std::sqrt(std::max(0.0f, v.x * v.x + v.y * v.y + v.z * v.z));
+    }
+
+    static Vec3 NormalizeVec3(const Vec3& v, const Vec3& fallback)
+    {
+        const float len = Vec3Length(v);
+        if (!(len > 1.0e-8f))
+            return fallback;
+        const float invLen = 1.0f / len;
+        return Vec3{v.x * invLen, v.y * invLen, v.z * invLen};
+    }
+
+    static Vec3 MulVec3(const Vec3& a, const Vec3& b)
+    {
+        return Vec3{a.x * b.x, a.y * b.y, a.z * b.z};
+    }
+
+    static Vec2 SampleTriangleUv(const Triangle& tri,
+                                 int uvSet,
+                                 float b0,
+                                 float b1,
+                                 float b2)
+    {
+        const int clampedUvSet = ClampUvSetIndex(uvSet);
+        const Vec2& uv0 = TriangleUV(tri, clampedUvSet, 0);
+        const Vec2& uv1 = TriangleUV(tri, clampedUvSet, 1);
+        const Vec2& uv2 = TriangleUV(tri, clampedUvSet, 2);
+        return Vec2{
+            uv0.x * b0 + uv1.x * b1 + uv2.x * b2,
+            uv0.y * b0 + uv1.y * b1 + uv2.y * b2
+        };
+    }
+
+    static Vec3 SampleImageLinearRGB(const CpuImageRGBA& image, const Vec2& uv)
+    {
+        if (!image.valid())
+            return Vec3{0.0f, 0.0f, 0.0f};
+
+        const float u = WrapUv(uv.x);
+        const float v = WrapUv(uv.y);
+        const int x = std::clamp(static_cast<int>(u * float(image.width - 1)), 0, image.width - 1);
+        const int y = std::clamp(static_cast<int>((1.0f - v) * float(image.height - 1)), 0, image.height - 1);
+        const std::size_t idx = ((std::size_t)y * (std::size_t)image.width + (std::size_t)x) * 4u;
+        return SrgbToLinear(Vec3{
+            image.pixels[idx + 0u] / 255.0f,
+            image.pixels[idx + 1u] / 255.0f,
+            image.pixels[idx + 2u] / 255.0f
+        });
+    }
+
+    static float SampleImageEmissiveMask(const CpuImageRGBA& image, const Vec2& uv)
+    {
+        if (!image.valid())
+            return 0.0f;
+
+        const float u = WrapUv(uv.x);
+        const float v = WrapUv(uv.y);
+        const int x = std::clamp(static_cast<int>(u * float(image.width - 1)), 0, image.width - 1);
+        const int y = std::clamp(static_cast<int>((1.0f - v) * float(image.height - 1)), 0, image.height - 1);
+        const std::size_t idx = ((std::size_t)y * (std::size_t)image.width + (std::size_t)x) * 4u;
+
+        const float r = image.pixels[idx + 0u] / 255.0f;
+        const float g = image.pixels[idx + 1u] / 255.0f;
+        const float b = image.pixels[idx + 2u] / 255.0f;
+        const float a = image.pixels[idx + 3u] / 255.0f;
+
+        if ((image.alphaMax - image.alphaMin) > (1.0f / 255.0f))
+            return Saturate((a - image.alphaMin) / std::max(image.alphaMax - image.alphaMin, 1.0e-6f));
+
+        if (image.maxRgb <= 1.0e-6f)
+            return 0.0f;
+
+        const float rgbMax = std::max(r, std::max(g, b));
+        return Saturate(rgbMax / image.maxRgb);
+    }
+
+    static float EmissiveUvSimilarityScore(const Vec3& baseColorSample,
+                                           const Vec3& emissionTarget,
+                                           float maskWeight)
+    {
+        if (!(maskWeight > 1.0e-4f))
+            return 0.0f;
+
+        const float sampleMax = std::max(baseColorSample.x, std::max(baseColorSample.y, baseColorSample.z));
+        const float sampleMin = std::min(baseColorSample.x, std::min(baseColorSample.y, baseColorSample.z));
+        const float sampleLuma = baseColorSample.x * 0.2126f + baseColorSample.y * 0.7152f + baseColorSample.z * 0.0722f;
+        if (!(sampleLuma > 1.0e-4f))
+            return 0.0f;
+
+        const Vec3 sampleN = NormalizeVec3(baseColorSample, Vec3{0.0f, 0.0f, 0.0f});
+        const Vec3 targetN = NormalizeVec3(emissionTarget, Vec3{0.0f, 0.0f, 0.0f});
+        const float chroma = std::max(0.0f, sampleMax - sampleMin);
+        const float cosine = std::max(0.0f,
+            sampleN.x * targetN.x +
+            sampleN.y * targetN.y +
+            sampleN.z * targetN.z);
+        return maskWeight * sampleLuma * (0.25f + chroma) * cosine * cosine;
+    }
+
+    static int InferSceneMaterialEmissionUvSet(const Scene& scene,
+                                               int32_t materialIndex,
+                                               const SceneMetaMaterial& material,
+                                               const std::vector<std::string>& baseColorTextures,
+                                               TextureImageCache& imageCache)
+    {
+        if (materialIndex < 0)
+            return 0;
+        if (material.baseColorTexIndex < 0 || material.emissionTexIndex < 0)
+            return 0;
+        if ((std::size_t)material.baseColorTexIndex >= baseColorTextures.size())
+            return 0;
+        if ((std::size_t)material.emissionTexIndex >= baseColorTextures.size())
+            return 0;
+
+        const CpuImageRGBA* baseImage = imageCache.load(baseColorTextures[(std::size_t)material.baseColorTexIndex]);
+        const CpuImageRGBA* emissionImage = imageCache.load(baseColorTextures[(std::size_t)material.emissionTexIndex]);
+        if (baseImage == nullptr || emissionImage == nullptr || !baseImage->valid() || !emissionImage->valid())
+            return 0;
+
+        const Vec3 emissionTarget = NormalizeVec3(material.emissionColor, Vec3{0.0f, 0.0f, 0.0f});
+        if (Vec3Length(emissionTarget) <= 1.0e-4f)
+            return 0;
+
+        constexpr std::array<std::array<float, 3>, 5> kBarySamples{{
+            {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f},
+            {0.60f, 0.20f, 0.20f},
+            {0.20f, 0.60f, 0.20f},
+            {0.20f, 0.20f, 0.60f},
+            {0.45f, 0.10f, 0.45f}
+        }};
+
+        std::array<float, 3> scores{0.0f, 0.0f, 0.0f};
+        std::array<int, 3> hitCounts{0, 0, 0};
+
+        for (const SceneObject& obj : scene.getObjects())
+        {
+            const auto& tris = obj.getTriangles();
+            for (const Triangle& tri : tris)
+            {
+                if (tri.materialIndex != materialIndex)
+                    continue;
+
+                for (const auto& bary : kBarySamples)
+                {
+                    const float b0 = bary[0];
+                    const float b1 = bary[1];
+                    const float b2 = bary[2];
+                    const Vec2 baseUv = SampleTriangleUv(tri, material.baseColorUvSet, b0, b1, b2);
+                    const Vec3 baseTexel = MulVec3(SampleImageLinearRGB(*baseImage, baseUv), material.baseColor);
+
+                    for (int uvSet = 0; uvSet < 3; ++uvSet)
+                    {
+                        const Vec2 emissiveUv = SampleTriangleUv(tri, uvSet, b0, b1, b2);
+                        const float mask = SampleImageEmissiveMask(*emissionImage, emissiveUv);
+                        if (mask <= 1.0e-4f)
+                            continue;
+
+                        scores[(std::size_t)uvSet] += EmissiveUvSimilarityScore(baseTexel, emissionTarget, mask);
+                        ++hitCounts[(std::size_t)uvSet];
+                    }
+                }
+            }
+        }
+
+        int bestUvSet = 0;
+        float bestScore = -1.0f;
+        for (int uvSet = 0; uvSet < 3; ++uvSet)
+        {
+            if (hitCounts[(std::size_t)uvSet] == 0)
+                continue;
+
+            const float normalizedScore = scores[(std::size_t)uvSet] / float(hitCounts[(std::size_t)uvSet]);
+            if (normalizedScore > bestScore)
+            {
+                bestScore = normalizedScore;
+                bestUvSet = uvSet;
+            }
+        }
+
+        return ClampUvSetIndex(bestUvSet);
+    }
+
     static std::array<float, 16> ReadMatrix4Field(const json& obj, const char* key)
     {
         std::array<float, 16> m{
@@ -840,6 +1148,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
         std::unordered_map<std::string, int32_t> materialIndexById;
         std::unordered_map<std::string, int32_t> materialIndexByName;
         std::unordered_map<std::string, int32_t> materialIndexByNorm;
+        std::vector<bool> materialEmissionUvExplicit;
 
         if (auto itM = j.find("materials"); itM != j.end() && itM->is_array())
         {
@@ -847,6 +1156,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
             materialIndexById.reserve(itM->size());
             materialIndexByName.reserve(itM->size());
             materialIndexByNorm.reserve(itM->size());
+            materialEmissionUvExplicit.reserve(itM->size());
 
             for (std::size_t i = 0; i < itM->size(); ++i)
             {
@@ -904,6 +1214,33 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 m.metallicTexIndex  = addLinearTexById(ReadStringField(jm, "metallic_texture_id", std::string{}));
                 m.occlusionTexIndex = addLinearTexById(ReadStringField(jm, "occlusion_texture_id", std::string{}));
 
+                const int sharedBaseUvSet = ReadSceneUvSetParam(jm,
+                    {"Base UV Coord", "Base UV Channel", "Base Texture UV Coord"},
+                    0);
+
+                m.baseColorUvSet = ClampUvSetIndex(sharedBaseUvSet);
+                m.normalUvSet    = ClampUvSetIndex(ReadSceneUvSetParam(jm,
+                    {"Normal UV Coord", "Normal Texture UV Coord", "Base UV Coord"},
+                    m.baseColorUvSet));
+                m.ormUvSet       = ClampUvSetIndex(ReadSceneUvSetParam(jm,
+                    {"ORM UV Coord", "RMA UV Coord", "Base UV Coord"},
+                    m.baseColorUvSet));
+                m.roughnessUvSet = ClampUvSetIndex(ReadSceneUvSetParam(jm,
+                    {"Roughness UV Coord", "ORM UV Coord", "RMA UV Coord", "Base UV Coord"},
+                    m.ormUvSet));
+                m.metallicUvSet  = ClampUvSetIndex(ReadSceneUvSetParam(jm,
+                    {"Metallic UV Coord", "ORM UV Coord", "RMA UV Coord", "Base UV Coord"},
+                    m.ormUvSet));
+                m.occlusionUvSet = ClampUvSetIndex(ReadSceneUvSetParam(jm,
+                    {"Occlusion UV Coord", "AO UV Coord", "ORM UV Coord", "RMA UV Coord", "Base UV Coord"},
+                    m.ormUvSet));
+
+                const int parsedEmissionUvSet = ReadSceneUvSetParam(jm,
+                    {"Emissive UV Coord", "Emissive Texture UV Coord", "Custom Texture Coord", "Base UV Coord"},
+                    -1);
+                const bool emissionUvExplicit = (parsedEmissionUvSet >= 0);
+                m.emissionUvSet = ClampUvSetIndex(emissionUvExplicit ? parsedEmissionUvSet : m.baseColorUvSet);
+
                 m.decalTilingU         = ReadSceneScalarParam(jm, {"TilingU"}, 1.0f);
                 m.decalTilingV         = ReadSceneScalarParam(jm, {"TilingV"}, 1.0f);
                 m.decalOpacityPower    = std::max(0.0f, ReadSceneScalarParam(jm, {"Damage Opacity Power"}, 1.0f));
@@ -955,6 +1292,33 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 const std::string emissiveTexNameLower = ToLowerCopy(textureNameById.count(emissiveTexId) ? textureNameById[emissiveTexId] : std::string{});
                 const std::string emissiveTexPathLower = ToLowerCopy(texturePathById.count(emissiveTexId) ? texturePathById[emissiveTexId] : std::string{});
                 const int materialDomain = ReadIntField(jm, "material_domain", 0);
+                const bool isUEHeadlightMaterial =
+                    (baseMaterialPathLower.find("mm_emissive_headlights_01a") != std::string::npos);
+                const bool isUETrafficLightMaterial =
+                    (materialNameLower.find("traffic_light_01a") != std::string::npos);
+
+                if (isUEHeadlightMaterial)
+                {
+                    m.specialModel = kSpecialMaterialUEEmissiveHeadlight;
+                    m.specialScalar0 = ReadSceneScalarParam(jm, {"Radius of Inner Glow"}, 0.5f);
+                    m.specialScalar1 = ReadSceneScalarParam(jm, {"Trasnparency Fresnel Power", "Transparency Fresnel Power"}, 4.0f);
+                    m.specialScalar2 = ReadSceneScalarParam(jm, {"Transparency Lerp A"}, 0.0f);
+                    m.specialScalar3 = ReadSceneScalarParam(jm, {"Transparency Lerp B"}, 0.0f);
+                    m.specialScalar4 = ReadSceneScalarParam(jm, {"Transparency"}, 1.0f);
+                    m.specialScalar5 = ReadSceneScalarParam(jm, {"Dirt Transparency"}, 1.0f);
+                }
+                else if (isUETrafficLightMaterial)
+                {
+                    m.specialModel = kSpecialMaterialUETrafficLight;
+                    m.specialTex0Index = addSrgbTexById(ReadSceneTextureParamId(jm, {"Dirt Texture"}));
+                    m.specialTex1Index = addSrgbTexById(ReadSceneTextureParamId(jm, {"Opacity Map"}));
+                    m.specialScalar0 = ReadSceneScalarParam(jm, {"Texture Coord Dirt Overlay"}, 1.0f);
+                    m.specialScalar1 = ReadSceneScalarParam(jm, {"Dirt Overlay Mask Sharpness"}, 0.5f);
+                    m.specialScalar2 = ReadSceneScalarParam(jm, {"Dirt Roughness"}, 0.9f);
+                    m.specialScalar3 = ReadSceneScalarParam(jm, {"Stain Premulitply"}, 1.0f);
+                    m.specialScalar4 = ReadSceneScalarParam(jm, {"Vertex Color Multi"}, 1.0f);
+                    m.specialScalar5 = ReadSceneScalarParam(jm, {"Height Ratio Offset"}, 0.0f);
+                }
 
                 const bool materialLooksExplicitEmissive = IsSpecialVisibleEmissiveSurface(materialNameLower, baseMaterialPathLower);
                 const bool materialLooksHousing          = IsLikelyLightHousingMaterialName(materialNameLower) && !materialLooksExplicitEmissive;
@@ -998,15 +1362,36 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                         m.emissionColor = Vec3{1.0f, 1.0f, 1.0f};
                         m.emissionStrength = 1000.0f;
                     }
+
+                    if (materialLooksExplicitEmissive && m.blendMode >= 2)
+                    {
+                        m.thinEmissiveSurface = true;
+                        if (m.emissionTexIndex < 0 && m.baseColorTexIndex >= 0)
+                        {
+                            m.emissionTexIndex = m.baseColorTexIndex;
+                            m.emissionUvSet = m.baseColorUvSet;
+                        }
+                    }
+
+                    if (!m.thinEmissiveSurface &&
+                        m.blendMode >= 2 &&
+                        m.emissionTexIndex >= 0 &&
+                        m.emissionTexIndex == m.baseColorTexIndex)
+                    {
+                        m.emissionUseAlphaMask = true;
+                    }
                 }
                 else
                 {
                     m.emissionTexIndex = -1;
                     m.emissionColor = Vec3{0.0f, 0.0f, 0.0f};
                     m.emissionStrength = 0.0f;
+                    m.thinEmissiveSurface = false;
+                    m.emissionUseAlphaMask = false;
                 }
 
                 parsedMaterials.push_back(m);
+                materialEmissionUvExplicit.push_back(emissionUvExplicit);
 
                 const int32_t idx = (int32_t)parsedMaterials.size() - 1;
                 const std::string stableId = ReadStringField(jm, "stable_id", std::string{});
@@ -1054,9 +1439,23 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
             return !IsExplicitEmissiveMaterialName(nameLower);
         };
 
+        struct AirDustLightLink
+        {
+            std::string actorPath;
+            Vec3 position{0.0f, 0.0f, 0.0f};
+            Vec3 color{1.0f, 1.0f, 1.0f};
+            float intensity = 0.0f;
+            float attenuationRadius = 0.0f;
+        };
+
+        std::vector<AirDustLightLink> airDustLightLinks;
+        std::unordered_map<std::string, std::size_t> airDustLightIndexByActor;
+
         scene.clearLights();
         if (auto itL = j.find("lights"); itL != j.end() && itL->is_array())
         {
+            airDustLightLinks.reserve(itL->size());
+            airDustLightIndexByActor.reserve(itL->size());
             for (const json& jl : *itL)
             {
                 if (!jl.is_object())
@@ -1089,6 +1488,8 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
 
                 l.intensity = ReadFloatField(jl, "intensity", 1.0f);
                 l.radius    = ReadFloatField(jl, "source_radius", 0.0f) * unitScale;
+                l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
+                l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
 
                 const float innerDeg = ReadFloatField(jl, "inner_cone_angle", 0.0f);
                 const float outerDeg = ReadFloatField(jl, "outer_cone_angle", 0.0f);
@@ -1100,6 +1501,93 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 l.attenuationRadius = ReadFloatField(jl, "attenuation_radius", 0.0f) * unitScale;
 
                 scene.addLight(l);
+
+                const std::string actorPath = ReadStringField(jl, "actor_path", std::string{});
+                if (!actorPath.empty())
+                {
+                    AirDustLightLink link{};
+                    link.actorPath = actorPath;
+                    link.position = l.position;
+                    link.color = l.color;
+                    link.intensity = l.intensity;
+                    link.attenuationRadius = l.attenuationRadius;
+                    airDustLightIndexByActor[actorPath] = airDustLightLinks.size();
+                    airDustLightLinks.push_back(link);
+                }
+            }
+        }
+
+        std::vector<SceneMetaAirDustVolume> parsedAirDustVolumes;
+        if (auto itP = j.find("primitives"); itP != j.end() && itP->is_array())
+        {
+            parsedAirDustVolumes.reserve(16);
+            for (const json& jp : *itP)
+            {
+                if (!jp.is_object())
+                    continue;
+
+                const std::string primitiveType = ReadStringField(jp, "primitive_type", std::string{});
+                if (primitiveType != "ParticleSystemComponent")
+                    continue;
+
+                const std::string rawNameLower = NormalizeKey(ReadStringField(jp, "raw_name",
+                    ReadStringField(jp, "name", std::string{})));
+                if (rawNameLower.find("airdust") == std::string::npos &&
+                    rawNameLower.find("air_dust") == std::string::npos)
+                {
+                    continue;
+                }
+
+                if (!ReadBoolFieldLoose(jp, "visible", true) || ReadBoolFieldLoose(jp, "hidden_in_game", false))
+                    continue;
+
+                auto itBounds = jp.find("bounds");
+                if (itBounds == jp.end() || !itBounds->is_object())
+                    continue;
+
+                SceneMetaAirDustVolume volume{};
+                volume.name = ReadStringField(jp, "name", std::string{});
+                volume.actorPath = ReadStringField(jp, "actor_path", std::string{});
+                volume.position = ReadVec3Field(*itBounds, "origin", Vec3{0.0f, 0.0f, 0.0f});
+                volume.extent = ReadVec3Field(*itBounds, "box_extent", Vec3{0.0f, 0.0f, 0.0f});
+                volume.position.x *= unitScale; volume.position.y *= unitScale; volume.position.z *= unitScale;
+                volume.extent.x *= unitScale; volume.extent.y *= unitScale; volume.extent.z *= unitScale;
+
+                const AirDustLightLink* bestLink = nullptr;
+                if (!volume.actorPath.empty())
+                {
+                    auto itLink = airDustLightIndexByActor.find(volume.actorPath);
+                    if (itLink != airDustLightIndexByActor.end())
+                        bestLink = &airDustLightLinks[itLink->second];
+                }
+
+                if (!bestLink)
+                {
+                    float bestDistSq = std::numeric_limits<float>::max();
+                    for (const AirDustLightLink& link : airDustLightLinks)
+                    {
+                        const float dx = link.position.x - volume.position.x;
+                        const float dy = link.position.y - volume.position.y;
+                        const float dz = link.position.z - volume.position.z;
+                        const float distSq = dx * dx + dy * dy + dz * dz;
+                        if (distSq < bestDistSq)
+                        {
+                            bestDistSq = distSq;
+                            bestLink = &link;
+                        }
+                    }
+                }
+
+                if (bestLink)
+                {
+                    volume.linkedLightPosition = bestLink->position;
+                    volume.linkedLightColor = bestLink->color;
+                    volume.linkedLightIntensity = bestLink->intensity;
+                    volume.linkedLightRadius = bestLink->attenuationRadius;
+                }
+
+                if (volume.linkedLightIntensity > 0.0f)
+                    parsedAirDustVolumes.push_back(volume);
             }
         }
 
@@ -1156,6 +1644,25 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 filtered.clear();
 
             obj->setTriangles(std::move(filtered));
+        }
+
+        TextureImageCache imageCache;
+        for (std::size_t materialIndex = 0; materialIndex < parsedMaterials.size(); ++materialIndex)
+        {
+            if (materialIndex < materialEmissionUvExplicit.size() && materialEmissionUvExplicit[materialIndex])
+                continue;
+
+            SceneMetaMaterial& material = parsedMaterials[materialIndex];
+            if (material.emissionTexIndex < 0 || material.baseColorTexIndex < 0)
+                continue;
+            if (Vec3Length(material.emissionColor) <= 1.0e-4f)
+                continue;
+
+            material.emissionUvSet = InferSceneMaterialEmissionUvSet(scene,
+                                                                     static_cast<int32_t>(materialIndex),
+                                                                     material,
+                                                                     baseColorTextures,
+                                                                     imageCache);
         }
 
         std::vector<SceneMetaDecal> parsedDecals;
@@ -1243,6 +1750,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
             outRes->materialsPBR      = outRes->materials;
             outRes->cameras           = std::move(parsedCameras);
             outRes->decals            = std::move(parsedDecals);
+            outRes->airDustVolumes    = std::move(parsedAirDustVolumes);
             outRes->hasPostProcess    = hasPostProcess;
             outRes->postProcess       = postProcess;
             outRes->hasFog            = hasFog;
@@ -1452,6 +1960,8 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
 
             l.intensity = ReadFloatField(jl, "intensity", 1.0f);
             l.radius    = ReadFloatField(jl, "radius", 0.0f) * unitScale;
+            l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
+            l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
 
             l.spotSize  = ReadFloatField(jl, "spot_size", 0.0f);
             l.spotBlend = clamp01(ReadFloatField(jl, "spot_blend", 0.0f));
@@ -1628,9 +2138,24 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             m.roughness        = ReadFloatField(jm, "roughness", 0.5f);
             m.opacity          = ReadNamedScalarParam(jm, "Opacity Multi", 1.0f);
 
-            // Fix: if emissive but no explicit emission_texture — use baseColor texture as emission mask.
+            const std::string materialNameLower = NormalizeKey(m.name);
+            const std::string baseMaterialPathLower = ToLowerCopy(ReadStringField(jm, "base_material_asset_path", std::string{}));
+            m.thinEmissiveSurface =
+                (m.emissionStrength > 0.0f) &&
+                (m.blendMode >= 2) &&
+                IsSpecialVisibleEmissiveSurface(materialNameLower, baseMaterialPathLower);
+
+            // Visible emissive glass/headlight shells in UE often drive emissive from the base texture.
             if (m.emissionStrength > 0.0f && m.emissionTexIndex < 0 && m.baseColorTexIndex >= 0)
                 m.emissionTexIndex = m.baseColorTexIndex;
+
+            if (!m.thinEmissiveSurface &&
+                m.blendMode >= 2 &&
+                m.emissionTexIndex >= 0 &&
+                m.emissionTexIndex == m.baseColorTexIndex)
+            {
+                m.emissionUseAlphaMask = true;
+            }
 
             parsedMaterials.push_back(m);
 

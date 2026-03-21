@@ -32,6 +32,12 @@ struct Light
     // Геометрический размер источника (для мягких теней / выборки по площади)
     float radius = 0.0f;
 
+    // UE point/spot source shape parameters.
+    // sourceLength extends the light into a tube/capsule along light.direction.
+    // softSourceRadius expands the effective glossy/penumbra footprint.
+    float sourceLength = 0.0f;
+    float softSourceRadius = 0.0f;
+
     // Радиус затухания из UE (AttenuationRadius).
     // 0.0f означает «старое поведение» — бесконечный 1/r^2.
     float attenuationRadius = 0.0f;

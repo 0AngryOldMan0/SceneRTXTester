@@ -6,16 +6,16 @@
 #include <cstdint>
 
 // CPU Triangle layout MUST match Metal Triangle layout (see Shader/macOS/RayTrace.metal).
-// Target size: 136 bytes.
+// UVs are stored as 3 UV sets x 3 triangle vertices in channel-major order:
+// uv[set * 3 + vertex].
+// Target size: 184 bytes.
 struct Triangle
 {
     Vec3 v0;
     Vec3 v1;
     Vec3 v2;
 
-    Vec2 uv0;
-    Vec2 uv1;
-    Vec2 uv2;
+    Vec2 uv[9];
 
     Vec3 normal;
     AABB ABoBa;
@@ -30,4 +30,19 @@ struct Triangle
     float   _padMat       = 0.0f;
 };
 
-static_assert(sizeof(Triangle) == 136, "Triangle size must be 136 bytes");
+static_assert(sizeof(Triangle) == 184, "Triangle size must be 184 bytes");
+
+static inline constexpr int TriangleUvIndex(int uvSet, int vertexIndex)
+{
+    return uvSet * 3 + vertexIndex;
+}
+
+static inline Vec2& TriangleUV(Triangle& tri, int uvSet, int vertexIndex)
+{
+    return tri.uv[TriangleUvIndex(uvSet, vertexIndex)];
+}
+
+static inline const Vec2& TriangleUV(const Triangle& tri, int uvSet, int vertexIndex)
+{
+    return tri.uv[TriangleUvIndex(uvSet, vertexIndex)];
+}
