@@ -577,23 +577,20 @@ inline float computeFiniteLightAttenuation(const device LightGPU& light,
     if (r2 <= 0.0f)
         return 0.0f;
 
-    // Export does not currently include explicit intensity units. Keep inverse-square in meters,
-    // then apply a practical per-type calibration so point lights provide broad spherical fill
-    // while spot lights remain directional accents.
+    // Scene loader normalizes explicit light units (candela/lumen/lux/EV), so shader-side
+    // attenuation stays unit-agnostic and uses one global local-light exposure scale.
     float attenuation = ((light.type == LIGHT_TYPE_AREA) ? INV_PI : INV_4PI) / r2;
-    float exposureScale = LOCAL_LIGHT_EXPOSURE_GPU;
+    attenuation *= LOCAL_LIGHT_EXPOSURE_GPU;
+
     float attenuationRadiusScale = LIGHT_ATTENUATION_RADIUS_SCALE;
     if (light.type == LIGHT_TYPE_POINT)
     {
-        exposureScale *= 2.2f;
         attenuationRadiusScale *= 1.55f;
     }
     else if (light.type == LIGHT_TYPE_SPOT)
     {
-        exposureScale *= 0.72f;
         attenuationRadiusScale *= 0.90f;
     }
-    attenuation *= exposureScale;
 
     if (light.attenuationRadius > 0.0f)
     {

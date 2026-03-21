@@ -19,6 +19,7 @@
 #include <cctype>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 
 namespace
 {
@@ -701,6 +702,340 @@ static bool IsSpecialVisibleEmissiveSurface(std::string_view materialNameLower,
     static float Vec3Length(const Vec3& v)
     {
         return std::sqrt(std::max(0.0f, v.x * v.x + v.y * v.y + v.z * v.z));
+    }
+
+    static float Vec3Luminance(const Vec3& v)
+    {
+        return std::max(0.0f, 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z);
+    }
+
+    static float DeriveImplicitEmissionStrengthFromColor(const Vec3& emissionColor,
+                                                         float targetLuminance,
+                                                         float minStrength,
+                                                         float maxStrength)
+    {
+        const float luma = Vec3Luminance(emissionColor);
+        if (!(luma > 1.0e-6f))
+            return minStrength;
+
+        const float rawStrength = (targetLuminance * 1000.0f) / luma;
+        return std::clamp(rawStrength, minStrength, maxStrength);
+    }
+
+    static float EmissionStrengthToTriangleScale(float emissionStrength)
+    {
+        constexpr float kMaxBakedEmissionStrength = 120.0f;
+        const float clampedStrength = std::clamp(emissionStrength, 0.0f, kMaxBakedEmissionStrength);
+        return clampedStrength * 0.001f;
+    }
+
+    enum class LightIntensityUnits : int32_t
+    {
+        Unspecified = -1,
+        Unitless    = 0,
+        Candelas    = 1,
+        Lumens      = 2,
+        Ev100       = 3,
+        Lux         = 4,
+        Nits        = 5
+    };
+
+    static Vec3 KelvinToSrgbApprox(float kelvin)
+    {
+        const float t = std::clamp(kelvin, 1000.0f, 40000.0f) / 100.0f;
+
+        float r = 1.0f;
+        float g = 1.0f;
+        float b = 1.0f;
+
+        if (t <= 66.0f)
+        {
+            r = 1.0f;
+            g = (99.4708025861f * std::log(std::max(t, 1.0f)) - 161.1195681661f) / 255.0f;
+            if (t <= 19.0f)
+            {
+                b = 0.0f;
+            }
+            else
+            {
+                b = (138.5177312231f * std::log(std::max(t - 10.0f, 1.0f)) - 305.0447927307f) / 255.0f;
+            }
+        }
+        else
+        {
+            const float x = t - 60.0f;
+            r = (329.6987274460f * std::pow(std::max(x, 1.0e-4f), -0.1332047592f)) / 255.0f;
+            g = (288.1221695283f * std::pow(std::max(x, 1.0e-4f), -0.0755148492f)) / 255.0f;
+            b = 1.0f;
+        }
+
+        return Vec3{Saturate(r), Saturate(g), Saturate(b)};
+    }
+
+    static Vec3 TemperatureTintFromKelvin(float kelvin)
+    {
+        const Vec3 whiteD65 = SrgbToLinear(KelvinToSrgbApprox(6500.0f));
+        const Vec3 c = SrgbToLinear(KelvinToSrgbApprox(kelvin));
+        return Vec3{
+            c.x / std::max(whiteD65.x, 1.0e-4f),
+            c.y / std::max(whiteD65.y, 1.0e-4f),
+            c.z / std::max(whiteD65.z, 1.0e-4f)
+        };
+    }
+
+    static std::string NormalizeLightUnitToken(std::string s)
+    {
+        std::string out;
+        out.reserve(s.size());
+        for (char c : s)
+        {
+            const unsigned char uc = static_cast<unsigned char>(c);
+            if (!std::isalnum(uc))
+                continue;
+            out.push_back(static_cast<char>(std::tolower(uc)));
+        }
+        return out;
+    }
+
+    static LightIntensityUnits ParseLightIntensityUnitsFromInteger(int rawValue)
+    {
+        switch (rawValue)
+        {
+            case 0: return LightIntensityUnits::Unitless;
+            case 1: return LightIntensityUnits::Candelas;
+            case 2: return LightIntensityUnits::Lumens;
+            case 3: return LightIntensityUnits::Ev100;
+            case 4: return LightIntensityUnits::Lux;
+            case 5: return LightIntensityUnits::Nits;
+            default: return LightIntensityUnits::Unspecified;
+        }
+    }
+
+    static LightIntensityUnits ParseLightIntensityUnitsFromString(const std::string& rawValue)
+    {
+        const std::string token = NormalizeLightUnitToken(rawValue);
+        if (token.empty())
+            return LightIntensityUnits::Unspecified;
+
+        if (token.find("unitless") != std::string::npos ||
+            token == "none")
+            return LightIntensityUnits::Unitless;
+
+        if (token.find("candela") != std::string::npos ||
+            token == "cd" ||
+            token.find("candelas") != std::string::npos)
+            return LightIntensityUnits::Candelas;
+
+        if (token.find("lumen") != std::string::npos ||
+            token == "lm" ||
+            token.find("lumens") != std::string::npos)
+            return LightIntensityUnits::Lumens;
+
+        if (token.find("ev100") != std::string::npos ||
+            token == "ev")
+            return LightIntensityUnits::Ev100;
+
+        if (token.find("lux") != std::string::npos)
+            return LightIntensityUnits::Lux;
+
+        if (token.find("nit") != std::string::npos ||
+            token.find("cdm2") != std::string::npos)
+            return LightIntensityUnits::Nits;
+
+        if (allDigits(token))
+            return ParseLightIntensityUnitsFromInteger(std::atoi(token.c_str()));
+
+        return LightIntensityUnits::Unspecified;
+    }
+
+    static LightIntensityUnits ParseLightIntensityUnitsFieldValue(const json& value)
+    {
+        if (value.is_string())
+            return ParseLightIntensityUnitsFromString(value.get<std::string>());
+        if (value.is_number_integer())
+            return ParseLightIntensityUnitsFromInteger(static_cast<int>(value.get<long long>()));
+        if (value.is_number())
+            return ParseLightIntensityUnitsFromInteger(static_cast<int>(value.get<double>()));
+        if (value.is_object())
+        {
+            if (auto itName = value.find("name"); itName != value.end())
+            {
+                const LightIntensityUnits parsed = ParseLightIntensityUnitsFieldValue(*itName);
+                if (parsed != LightIntensityUnits::Unspecified)
+                    return parsed;
+            }
+            if (auto itValue = value.find("value"); itValue != value.end())
+            {
+                const LightIntensityUnits parsed = ParseLightIntensityUnitsFieldValue(*itValue);
+                if (parsed != LightIntensityUnits::Unspecified)
+                    return parsed;
+            }
+        }
+        return LightIntensityUnits::Unspecified;
+    }
+
+    static LightIntensityUnits ReadLightIntensityUnits(const json& lightJson)
+    {
+        constexpr const char* kKeys[] = {
+            "intensity_units",
+            "intensity_unit",
+            "light_units",
+            "light_unit",
+            "units"
+        };
+
+        for (const char* key : kKeys)
+        {
+            auto it = lightJson.find(key);
+            if (it == lightJson.end())
+                continue;
+
+            const LightIntensityUnits parsed = ParseLightIntensityUnitsFieldValue(*it);
+            if (parsed != LightIntensityUnits::Unspecified)
+                return parsed;
+        }
+
+        return LightIntensityUnits::Unspecified;
+    }
+
+    static float SpotOuterSolidAngleSteradians(float fullConeRadians)
+    {
+        if (!(fullConeRadians > 1.0e-6f))
+            return 4.0f * kPI;
+
+        const float halfCone = std::clamp(0.5f * fullConeRadians, 0.0f, kPI - 1.0e-4f);
+        const float omega = 2.0f * kPI * (1.0f - std::cos(halfCone));
+        return std::max(omega, 1.0e-4f);
+    }
+
+    static float ApproxLightEmittingAreaSquareMeters(LightType type,
+                                                     float radiusWorldUnits,
+                                                     float softRadiusWorldUnits,
+                                                     float sourceLengthWorldUnits,
+                                                     float areaSizeXWorldUnits,
+                                                     float areaSizeYWorldUnits,
+                                                     float worldUnitToMeters)
+    {
+        const float unitsToMeters = std::max(worldUnitToMeters, 1.0e-4f);
+
+        if (type == LightType::Area)
+        {
+            const float sx = std::max(areaSizeXWorldUnits * unitsToMeters, 0.0f);
+            const float sy = std::max(areaSizeYWorldUnits * unitsToMeters, 0.0f);
+            if (sx > 1.0e-6f && sy > 1.0e-6f)
+                return sx * sy;
+        }
+
+        const float r = std::max(std::max(radiusWorldUnits, softRadiusWorldUnits) * unitsToMeters, 0.0f);
+        const float l = std::max(sourceLengthWorldUnits * unitsToMeters, 0.0f);
+
+        if (!(r > 1.0e-6f))
+            return 0.0f;
+        if (l > 1.0e-6f)
+            return 2.0f * kPI * r * l + 4.0f * kPI * r * r;
+        return 4.0f * kPI * r * r;
+    }
+
+    static float Ev100ToLux(float ev100)
+    {
+        const float clampedEv = std::clamp(ev100, -16.0f, 24.0f);
+        return 2.5f * std::exp2(clampedEv);
+    }
+
+    static float LegacyUnitlessIntensityScale(LightType type)
+    {
+        switch (type)
+        {
+            case LightType::Point: return 2.2f;
+            case LightType::Spot:  return 0.72f;
+            default:               return 1.0f;
+        }
+    }
+
+    static float ConvertLightIntensityForRenderer(float rawIntensity,
+                                                  LightType type,
+                                                  LightIntensityUnits units,
+                                                  float spotSizeRadians,
+                                                  float radiusWorldUnits,
+                                                  float softRadiusWorldUnits,
+                                                  float sourceLengthWorldUnits,
+                                                  float areaSizeXWorldUnits,
+                                                  float areaSizeYWorldUnits,
+                                                  float worldUnitToMeters)
+    {
+        if (!(rawIntensity > 0.0f) || !std::isfinite(rawIntensity))
+            return 0.0f;
+
+        const float intensity = std::max(rawIntensity, 0.0f);
+        if (units == LightIntensityUnits::Unspecified || units == LightIntensityUnits::Unitless)
+            return intensity * LegacyUnitlessIntensityScale(type);
+
+        auto candelaToRendererIntensity = [type](float candelas) -> float
+        {
+            if (type == LightType::Directional)
+                return candelas;
+            if (type == LightType::Area)
+                return candelas * kPI;
+            return candelas * (4.0f * kPI);
+        };
+
+        float rendererIntensity = intensity;
+        switch (units)
+        {
+            case LightIntensityUnits::Candelas:
+            {
+                rendererIntensity = candelaToRendererIntensity(intensity);
+                break;
+            }
+            case LightIntensityUnits::Lumens:
+            {
+                if (type == LightType::Spot)
+                {
+                    const float omega = SpotOuterSolidAngleSteradians(spotSizeRadians);
+                    rendererIntensity = intensity * ((4.0f * kPI) / omega);
+                }
+                else
+                {
+                    rendererIntensity = intensity;
+                }
+                break;
+            }
+            case LightIntensityUnits::Ev100:
+            {
+                rendererIntensity = candelaToRendererIntensity(Ev100ToLux(intensity));
+                break;
+            }
+            case LightIntensityUnits::Lux:
+            {
+                rendererIntensity = candelaToRendererIntensity(intensity);
+                break;
+            }
+            case LightIntensityUnits::Nits:
+            {
+                float areaM2 = ApproxLightEmittingAreaSquareMeters(type,
+                                                                    radiusWorldUnits,
+                                                                    softRadiusWorldUnits,
+                                                                    sourceLengthWorldUnits,
+                                                                    areaSizeXWorldUnits,
+                                                                    areaSizeYWorldUnits,
+                                                                    worldUnitToMeters);
+                if (!(areaM2 > 0.0f))
+                    areaM2 = 1.0f;
+                rendererIntensity = candelaToRendererIntensity(intensity * areaM2);
+                break;
+            }
+            case LightIntensityUnits::Unitless:
+            case LightIntensityUnits::Unspecified:
+            default:
+            {
+                rendererIntensity = intensity;
+                break;
+            }
+        }
+
+        if (!std::isfinite(rendererIntensity))
+            return 0.0f;
+        return std::max(rendererIntensity, 0.0f);
     }
 
     static Vec3 NormalizeVec3(const Vec3& v, const Vec3& fallback)
@@ -1457,18 +1792,47 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
 
                 if (allowEmission)
                 {
-                    if (explicitEmissiveStrength >= 0.0f)
+                    const bool hasExplicitEmissiveStrength = (explicitEmissiveStrength >= 0.0f);
+                    constexpr float kExplicitEmissiveStrengthMax = 120.0f;
+                    constexpr float kImplicitEmissiveStrengthMin = 2.0f;
+                    constexpr float kImplicitEmissiveStrengthMax = 48.0f;
+                    constexpr float kImplicitTrafficStrengthMax = 18.0f;
+                    constexpr float kImplicitTargetLumaDefault = 0.070f;
+                    constexpr float kImplicitTargetLumaTraffic = 0.030f;
+                    constexpr float kImplicitTargetLumaHeadlight = 0.090f;
+                    constexpr float kImplicitTexOnlyStrengthDefault = 16.0f;
+                    constexpr float kImplicitTexOnlyStrengthTraffic = 8.0f;
+
+                    if (hasExplicitEmissiveStrength)
                     {
-                        m.emissionStrength = explicitEmissiveStrength;
+                        const float maxExplicitStrength =
+                            isUETrafficLightMaterial
+                                ? std::min(kExplicitEmissiveStrengthMax, 24.0f)
+                                : kExplicitEmissiveStrengthMax;
+                        m.emissionStrength = std::clamp(explicitEmissiveStrength, 0.0f, maxExplicitStrength);
                     }
                     else if (emissionColorNonZero)
                     {
-                        m.emissionStrength = 1000.0f;
+                        const float targetLuma =
+                            isUETrafficLightMaterial
+                                ? kImplicitTargetLumaTraffic
+                                : (isUEHeadlightMaterial ? kImplicitTargetLumaHeadlight
+                                                         : kImplicitTargetLumaDefault);
+                        const float maxImplicitStrength =
+                            isUETrafficLightMaterial ? kImplicitTrafficStrengthMax
+                                                     : kImplicitEmissiveStrengthMax;
+                        m.emissionStrength = DeriveImplicitEmissionStrengthFromColor(m.emissionColor,
+                                                                                      targetLuma,
+                                                                                      kImplicitEmissiveStrengthMin,
+                                                                                      maxImplicitStrength);
                     }
                     else if (m.emissionTexIndex >= 0)
                     {
                         m.emissionColor = Vec3{1.0f, 1.0f, 1.0f};
-                        m.emissionStrength = 1000.0f;
+                        m.emissionStrength =
+                            isUETrafficLightMaterial
+                                ? kImplicitTexOnlyStrengthTraffic
+                                : kImplicitTexOnlyStrengthDefault;
                     }
 
                     if (materialLooksExplicitEmissive && m.blendMode >= 2)
@@ -1589,23 +1953,51 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 l.position  = MatrixPosition(m);
                 l.direction = NormalizeSafe(MatrixAxisX(m), Vec3{1, 0, 0});
                 l.color     = ReadVec3Field(jl, "color", Vec3{1, 1, 1});
+                if (ReadBoolFieldLoose(jl, "use_temperature", false))
+                {
+                    const float temperatureKelvin = ReadFloatField(jl, "temperature", 6500.0f);
+                    l.color = MulVec3(l.color, TemperatureTintFromKelvin(temperatureKelvin));
+                }
 
                 l.position.x *= unitScale;
                 l.position.y *= unitScale;
                 l.position.z *= unitScale;
 
-                l.intensity = ReadFloatField(jl, "intensity", 1.0f);
+                const float rawIntensity = ReadFloatField(jl, "intensity", 1.0f);
                 l.radius    = ReadFloatField(jl, "source_radius", 0.0f) * unitScale;
                 l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
                 l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
                 l.castShadows = ReadBoolFieldLoose(jl, "cast_shadows", true);
 
+                float areaSizeX = ReadFloatField(jl, "source_width", 0.0f);
+                if (!(areaSizeX > 0.0f))
+                    areaSizeX = ReadFloatField(jl, "area_size_x", ReadFloatField(jl, "area_size", 0.0f));
+                float areaSizeY = ReadFloatField(jl, "source_height", 0.0f);
+                if (!(areaSizeY > 0.0f))
+                    areaSizeY = ReadFloatField(jl, "area_size_y", areaSizeX);
+                l.areaSizeX = areaSizeX * unitScale;
+                l.areaSizeY = areaSizeY * unitScale;
+
                 const float innerDeg = ReadFloatField(jl, "inner_cone_angle", 0.0f);
                 const float outerDeg = ReadFloatField(jl, "outer_cone_angle", 0.0f);
-                l.spotSize  = outerDeg * kPI / 180.0f;
+                // UE stores cone angles as half-angles from the axis; shader expects full cone.
+                l.spotSize  = (2.0f * outerDeg) * kPI / 180.0f;
                 l.spotBlend = 0.0f;
                 if (outerDeg > 1e-6f && innerDeg >= 0.0f && innerDeg < outerDeg)
                     l.spotBlend = std::clamp(1.0f - (innerDeg / outerDeg), 0.0f, 1.0f);
+
+                const LightIntensityUnits intensityUnits = ReadLightIntensityUnits(jl);
+                const float worldUnitToMeters = std::max(unitScale * 0.01f, 1.0e-4f);
+                l.intensity = ConvertLightIntensityForRenderer(rawIntensity,
+                                                               l.type,
+                                                               intensityUnits,
+                                                               l.spotSize,
+                                                               l.radius,
+                                                               l.softSourceRadius,
+                                                               l.sourceLength,
+                                                               l.areaSizeX,
+                                                               l.areaSizeY,
+                                                               worldUnitToMeters);
 
                 l.attenuationRadius = ReadFloatField(jl, "attenuation_radius", 0.0f) * unitScale;
                 l.ownerId = HashStableString32(ReadStringField(jl, "actor_path", std::string{}));
@@ -1736,7 +2128,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     const SceneMetaMaterial& sm = parsedMaterials[(std::size_t)matIdx];
                     tri.color = sm.baseColor;
 
-                    const float strength = sm.emissionStrength * 0.001f;
+                    const float strength = EmissionStrengthToTriangleScale(sm.emissionStrength);
                     tri.emission = Vec3{
                         sm.emissionColor.x * strength,
                         sm.emissionColor.y * strength,
@@ -2070,17 +2462,44 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             l.position  = ReadVec3Field(jl, "position",  Vec3{0,0,0});
             l.direction = ReadVec3Field(jl, "direction", Vec3{0,-1,0});
             l.color     = ReadVec3Field(jl, "color",     Vec3{1,1,1});
+            if (ReadBoolFieldLoose(jl, "use_temperature", false))
+            {
+                const float temperatureKelvin = ReadFloatField(jl, "temperature", 6500.0f);
+                l.color = MulVec3(l.color, TemperatureTintFromKelvin(temperatureKelvin));
+            }
 
             l.position.x *= unitScale; l.position.y *= unitScale; l.position.z *= unitScale;
 
-            l.intensity = ReadFloatField(jl, "intensity", 1.0f);
+            const float rawIntensity = ReadFloatField(jl, "intensity", 1.0f);
             l.radius    = ReadFloatField(jl, "radius", 0.0f) * unitScale;
             l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
             l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
             l.castShadows = ReadBoolFieldLoose(jl, "cast_shadows", true);
 
+            float areaSizeX = ReadFloatField(jl, "area_size_x", ReadFloatField(jl, "area_size", 0.0f));
+            if (!(areaSizeX > 0.0f))
+                areaSizeX = ReadFloatField(jl, "source_width", 0.0f);
+            float areaSizeY = ReadFloatField(jl, "area_size_y", areaSizeX);
+            if (!(areaSizeY > 0.0f))
+                areaSizeY = ReadFloatField(jl, "source_height", areaSizeX);
+            l.areaSizeX = areaSizeX * unitScale;
+            l.areaSizeY = areaSizeY * unitScale;
+
             l.spotSize  = ReadFloatField(jl, "spot_size", 0.0f);
             l.spotBlend = clamp01(ReadFloatField(jl, "spot_blend", 0.0f));
+
+            const LightIntensityUnits intensityUnits = ReadLightIntensityUnits(jl);
+            const float worldUnitToMeters = std::max(unitScale, 1.0e-4f);
+            l.intensity = ConvertLightIntensityForRenderer(rawIntensity,
+                                                           l.type,
+                                                           intensityUnits,
+                                                           l.spotSize,
+                                                           l.radius,
+                                                           l.softSourceRadius,
+                                                           l.sourceLength,
+                                                           l.areaSizeX,
+                                                           l.areaSizeY,
+                                                           worldUnitToMeters);
 
             l.attenuationRadius = ReadFloatField(jl, "attenuation_radius", 0.0f) * unitScale;
             l.ownerId = HashStableString32(ReadStringField(jl, "actor_path", std::string{}));
@@ -2454,7 +2873,7 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
                 tris[ti].color = sm.baseColor;
 
                 // Emission
-                float strength = sm.emissionStrength * 0.001f;
+                const float strength = EmissionStrengthToTriangleScale(sm.emissionStrength);
                 tris[ti].emission = Vec3{
                     sm.emissionColor.x * strength,
                     sm.emissionColor.y * strength,
