@@ -8,6 +8,20 @@
 
 namespace
 {
+    static std::uint32_t HashStableString32(const std::string &s)
+    {
+        constexpr std::uint32_t kOffset = 2166136261u;
+        constexpr std::uint32_t kPrime  = 16777619u;
+
+        std::uint32_t hash = kOffset;
+        for (unsigned char ch : s)
+        {
+            hash ^= static_cast<std::uint32_t>(ch);
+            hash *= kPrime;
+        }
+        return hash;
+    }
+
     static SceneTransformMatrix IdentityMatrix()
     {
         return SceneTransformMatrix{
@@ -321,12 +335,15 @@ void Scene::buildGlobalBVH(BVHBuilder::Strategy strategy)
                          : ComputeTriangleBounds(srcTris);
 
         const auto &instanceTransforms = obj.getInstanceTransforms();
+        const auto &instanceMetadata = obj.getInstanceMetadata();
         const bool useIdentity = instanceTransforms.empty();
         const std::size_t instanceCount = useIdentity ? 1u : instanceTransforms.size();
 
         for (std::size_t i = 0; i < instanceCount; ++i)
         {
             const SceneTransformMatrix matrix = useIdentity ? IdentityMatrix() : instanceTransforms[i];
+            const SceneObjectInstanceMeta *meta =
+                (i < instanceMetadata.size()) ? &instanceMetadata[i] : nullptr;
 
             SceneInstanceGPU inst{};
             for (int r = 0; r < 3; ++r)
@@ -363,6 +380,10 @@ void Scene::buildGlobalBVH(BVHBuilder::Strategy strategy)
 
             inst.worldBounds = TransformBounds(localBounds, matrix);
             inst.blasRootIndex = globalBlasRoot;
+            inst.flags = (meta == nullptr || meta->castsShadow) ? 1u : 0u;
+            inst.ownerId = (meta != nullptr && !meta->actorPath.empty())
+                         ? HashStableString32(meta->actorPath)
+                         : 0u;
             globalInstances_.push_back(inst);
             instanceBounds.push_back(inst.worldBounds);
         }

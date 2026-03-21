@@ -621,7 +621,7 @@ namespace
 struct LightGPU
 {
     int   type;
-    int   _pad0;
+    std::uint32_t flags;
 
     Vec3  position;
     Vec3  direction;
@@ -635,7 +635,7 @@ struct LightGPU
     float spotBlend;         // 0..1
 
     float attenuationRadius; // UE AttenuationRadius, 0 = бесконечный (старое поведение)
-    float _pad1;
+    std::uint32_t ownerId;
 };
 static_assert(sizeof(LightGPU) == 76, "LightGPU size must be 76 bytes");
 
@@ -770,8 +770,13 @@ struct PostProcessParamsCPU
     float colorSaturationY;
     float colorSaturationZ;
     float shadowLift;
+
+    float fogStartDistance;
+    float fogMaxOpacity;
+    float fogHeightZ;
+    float worldUnitToMeters;
 };
-static_assert(sizeof(PostProcessParamsCPU) == 128, "PostProcessParamsCPU size must be 128 bytes");
+static_assert(sizeof(PostProcessParamsCPU) == 144, "PostProcessParamsCPU size must be 144 bytes");
 
 // -------------------- helpers: texture loading --------------------
 
@@ -1912,7 +1917,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
     {
         LightGPU dst{};
         dst.type      = static_cast<int>(src.type);
-        dst._pad0     = 0;
+        dst.flags     = src.castShadows ? 1u : 0u;
         dst.position  = src.position;
         dst.direction = src.direction;
         dst.color     = src.color;
@@ -1923,7 +1928,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
         dst.spotSize  = src.spotSize;
         dst.spotBlend = src.spotBlend;
         dst.attenuationRadius = src.attenuationRadius;
-        dst._pad1 = 0.0f;
+        dst.ownerId = src.ownerId;
         gpuLights.push_back(dst);
     }
 
@@ -2037,6 +2042,10 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
     pp.colorSaturationY = 1.0f;
     pp.colorSaturationZ = 1.0f;
     pp.shadowLift = 0.010f;
+    pp.fogStartDistance = 0.0f;
+    pp.fogMaxOpacity = 1.0f;
+    pp.fogHeightZ = 0.0f;
+    pp.worldUnitToMeters = 1.0f;
 
     if (metaRes)
     {
@@ -2066,18 +2075,23 @@ static PostProcessParamsCPU BuildPostProcessParams(const SceneMetaResources *met
         if (metaRes->hasFog)
         {
             const SceneMetaFog &src = metaRes->fog;
-            pp.fogDensity = std::max(0.0f, src.fogDensity) * 0.11f;
-            pp.fogHeightFalloff = std::max(0.0f, src.heightFalloff) * 0.30f;
-            pp.fogScatteringG = src.scatteringG;
+            pp.fogDensity = std::max(0.0f, src.fogDensity);
+            pp.fogHeightFalloff = std::max(0.0f, src.heightFalloff);
+            pp.fogScatteringG = std::clamp(src.scatteringG, -0.95f, 0.95f);
             pp.fogColorX = src.inscatteringColor.x;
             pp.fogColorY = src.inscatteringColor.y;
             pp.fogColorZ = src.inscatteringColor.z;
-            pp.fogExtinctionScale = std::max(0.0f, src.extinctionScale) * 0.60f;
+            pp.fogExtinctionScale = std::max(0.0f, src.extinctionScale);
             pp.fogAlbedoX = src.volumetricAlbedo.x;
             pp.fogAlbedoY = src.volumetricAlbedo.y;
             pp.fogAlbedoZ = src.volumetricAlbedo.z;
             pp.volumetricFog = src.volumetricFog ? 1.0f : 0.0f;
+            pp.fogStartDistance = std::max(0.0f, src.startDistance);
+            pp.fogMaxOpacity = std::clamp(src.maxOpacity, 0.0f, 1.0f);
+            pp.fogHeightZ = src.heightReferenceZ;
         }
+
+        pp.worldUnitToMeters = std::max(metaRes->worldUnitToMeters, 1.0e-4f);
     }
 
     pp.nearPlane = std::max(1.0e-4f, cameraCPU.nearPlane);
@@ -2392,6 +2406,9 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             [enc setBuffer:g_decalCountBuffer            offset:0 atIndex:19];
             [enc setBuffer:g_meshNodeCountBuffer         offset:0 atIndex:20];
             [enc setBuffer:g_instanceCountBuffer         offset:0 atIndex:21];
+            [enc setBuffer:g_postProcessBuffer           offset:0 atIndex:22];
+            [enc setBuffer:g_airDustVolumeBuffer         offset:0 atIndex:23];
+            [enc setBuffer:g_airDustVolumeCountBuffer    offset:0 atIndex:24];
 
             [enc setTexture:g_accumTexture atIndex:0];
             [enc setTexture:g_hdrTexture   atIndex:1];

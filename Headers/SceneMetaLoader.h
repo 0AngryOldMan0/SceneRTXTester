@@ -53,6 +53,13 @@ struct SceneMetaFog
     float fogDensity = 0.0f;
     float heightFalloff = 0.0f;
     Vec3  inscatteringColor{1.0f, 1.0f, 1.0f};
+    float maxOpacity = 1.0f;
+    float startDistance = 0.0f;
+    float heightReferenceZ = 0.0f;
+    bool  hasHeightReference = false;
+
+    std::string actorPath;
+    std::string componentPath;
 
     bool  volumetricFog = false;
     float scatteringG = 0.0f;          // HG g, from volumetric_scattering_distribution
@@ -189,6 +196,9 @@ struct SceneMetaResources
 
     // Localized dust / haze volumes reconstructed from exported particle helpers like P_AirDust_01.
     std::vector<SceneMetaAirDustVolume> airDustVolumes;
+
+    // Conversion from scene world units to meters for physically-based effects like volumetrics.
+    float worldUnitToMeters = 1.0f;
 
     // Optional global settings
     bool hasPostProcess = false;

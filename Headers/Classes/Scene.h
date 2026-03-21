@@ -36,8 +36,8 @@ struct SceneInstanceGPU
 
     AABB worldBounds{};
     int blasRootIndex = -1;
-    int _pad0 = 0;
-    int _pad1 = 0;
+    std::uint32_t flags = 1u;
+    std::uint32_t ownerId = 0u;
     int _pad2 = 0;
 };
 

@@ -14,6 +14,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <cctype>
 #include <unordered_map>
 
 namespace
@@ -53,6 +54,34 @@ namespace
         for (std::size_t i = 0; i < 16; ++i)
             m[i] = (float)j[i].get<double>();
         return m;
+    }
+
+    static bool ReadBoolFieldLoose(const json& obj, const char* key, bool def)
+    {
+        auto it = obj.find(key);
+        if (it == obj.end())
+            return def;
+
+        if (it->is_boolean())
+            return it->get<bool>();
+        if (it->is_number_integer())
+            return it->get<int>() != 0;
+        if (it->is_number_unsigned())
+            return it->get<unsigned int>() != 0u;
+        if (it->is_number_float())
+            return std::abs(it->get<double>()) > 0.5;
+        if (it->is_string())
+        {
+            std::string v = it->get<std::string>();
+            std::transform(v.begin(), v.end(), v.begin(),
+                           [](unsigned char ch){ return static_cast<char>(std::tolower(ch)); });
+            if (v == "true" || v == "1" || v == "yes")
+                return true;
+            if (v == "false" || v == "0" || v == "no")
+                return false;
+        }
+
+        return def;
     }
 
 
@@ -370,6 +399,11 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
 
         const std::vector<SectionInfo> sections = BuildPrimitiveSections(jp, mesh, materialIndexById, materialIndexByName);
         const std::string meshSpace = jp.value("mesh_space", std::string{});
+        const SceneObjectInstanceMeta instanceMeta{
+            ReadBoolFieldLoose(jp, "cast_shadow", true),
+            jp.value("actor_path", std::string{}),
+            jp.value("component_path", std::string{})
+        };
 
         std::vector<SceneTransformMatrix> instanceMatrices;
         if (meshSpace == "scene_world_baked")
@@ -472,7 +506,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
             if (!obj.isEmpty())
             {
                 for (const SceneTransformMatrix& m : instanceMatrices)
-                    obj.addInstanceTransform(m);
+                    obj.addInstanceTransform(m, instanceMeta);
 
                 objects.push_back(std::move(obj));
                 objectIndexByGroupKey[groupKey] = objects.size() - 1;
@@ -482,7 +516,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
         {
             SceneObject& obj = objects[itGroup->second];
             for (const SceneTransformMatrix& m : instanceMatrices)
-                obj.addInstanceTransform(m);
+                obj.addInstanceTransform(m, instanceMeta);
         }
     }
 

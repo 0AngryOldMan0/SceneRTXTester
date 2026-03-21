@@ -3,6 +3,7 @@ using namespace metal;
 
 constant float PI               = 3.14159265358979323846f;
 constant float INV_PI           = 1.0f / PI;
+constant float INV_4PI          = 1.0f / (4.0f * PI);
 constant float SHADOW_EPS       = 1e-3f;
 
 constant float EMISSION_VISIBLE_EXPOSURE_GPU   = 1.0f;   // emissive surfaces use exported scene energy directly
@@ -10,6 +11,7 @@ constant float EMISSION_LIGHT_EXPOSURE_GPU     = 1.0f;   // emissive lighting al
 constant float ENV_INTENSITY_GPU               = 0.10f;  // subtle fallback only; scene lights should dominate
 constant float LIGHT_FALLOFF_DISTANCE_SCALE    = 1.0f;   // use exported light distance/falloff as-is
 constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 1.15f;  // slight UE-like soft extension for practical reach in large tunnel scenes
+constant float LOCAL_LIGHT_EXPOSURE_GPU        = 0.10f;  // base calibration for local finite lights after world-unit -> meter conversion
 
 // --- параметры денойзера ---
 constant bool  DENOISE_ENABLE        = true;
@@ -44,6 +46,11 @@ constant int LIGHTING_CALIBRATION_MODE = 0;
 LIGHTING_CALIBRATION_MODE:
 0 — обычный рендер
 1 — raw lighting calibration: no fallback env, no fog/bloom/tonemap/vignette/grain
+2 — direct local lights only (surface shading, no emissive/env)
+3 — emissive only (direct emissive + hit emission, no local lights/env)
+4 — local lights + emissive only (no env/secondary transport)
+5 — point lights only
+6 — spot lights only
 */
 
 // Normal map conventions (toggle if green channel looks inverted)
@@ -119,8 +126,8 @@ struct SceneInstanceGPU
     float normalToWorld[12];
     AABB  worldBounds;
     int   blasRootIndex;
-    int   _pad0;
-    int   _pad1;
+    uint  flags;
+    uint  ownerId;
     int   _pad2;
 };
 
@@ -178,7 +185,7 @@ constant int LIGHT_TYPE_AREA        = 3;
 struct LightGPU
 {
     int   type;
-    int   _pad0;          // выравнивание до 8 байт
+    uint  flags;          // bit0 = casts shadows
 
     packed_float3 position;
     packed_float3 direction;
@@ -193,7 +200,7 @@ struct LightGPU
 
     // Радиус затухания (UE AttenuationRadius, в тех же единицах, что и позиция)
     float attenuationRadius;
-    float _pad1;
+    uint  ownerId;
 };
 
 constant uint MAX_BASE_TEX = 124; // unified scene texture pool (sRGB + linear), bound from texture(4)
@@ -246,6 +253,8 @@ constant int MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = 1;
 constant int MATERIAL_FLAG_THIN_EMISSIVE_SURFACE   = 2;
 constant int SPECIAL_MATERIAL_UE_HEADLIGHT         = 1;
 constant int SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT     = 2;
+constant uint INSTANCE_FLAG_CASTS_SHADOW           = 1u;
+constant uint LIGHT_FLAG_CASTS_SHADOW              = 1u;
 
 struct DecalGPU
 {
@@ -299,6 +308,55 @@ struct AirDustVolumeGPU
     float lightColorX, lightColorY, lightColorZ, lightRadius;
 };
 
+// Must stay byte-compatible with PostProcessParamsCPU in MetalRenderer.mm.
+struct PrimaryVolumeParams
+{
+    float exposure;
+    float bloomIntensity;
+    float bloomThreshold;
+    float vignetteIntensity;
+
+    float chromaticAberration;
+    float filmGrainIntensity;
+    float filmSlope;
+    float filmToe;
+
+    float filmShoulder;
+    float filmBlackClip;
+    float filmWhiteClip;
+    float fogDensity;
+
+    float fogHeightFalloff;
+    float fogScatteringG;
+    float fogColorX;
+    float fogColorY;
+
+    float fogColorZ;
+    float fogExtinctionScale;
+    float fogAlbedoX;
+    float fogAlbedoY;
+
+    float fogAlbedoZ;
+    float volumetricFog;
+    float nearPlane;
+    float farPlane;
+
+    float time;
+    float width;
+    float height;
+    float _pad0;
+
+    float colorSaturationX;
+    float colorSaturationY;
+    float colorSaturationZ;
+    float shadowLift;
+
+    float fogStartDistance;
+    float fogMaxOpacity;
+    float fogHeightZ;
+    float worldUnitToMeters;
+};
+
 struct BSDFSample
 {
     uint   valid;
@@ -315,6 +373,20 @@ struct PathTraceTextureResult
     float  hitMask;
     float3 normal;
     float  _pad0;
+};
+
+struct PrimaryMediumSample
+{
+    float  sigmaT;
+    float3 albedo;
+    float  anisotropy;
+    float3 ambientTint;
+};
+
+struct PrimaryVolumetricResult
+{
+    float3 inscattering;
+    float3 transmittance;
 };
 
 // ======================
@@ -492,28 +564,63 @@ inline float3 sampleFiniteLightPosition(const device LightGPU& light,
 }
 
 inline float computeFiniteLightAttenuation(const device LightGPU& light,
-                                           float                  dist)
+                                           float                  dist,
+                                           float                  worldUnitToMeters)
 {
-    const float falloffDist = max(dist * LIGHT_FALLOFF_DISTANCE_SCALE, 1e-3f);
+    const float distMeters = max(dist * max(worldUnitToMeters, 1.0e-4f), 1.0e-4f);
+    const float falloffDist = max(distMeters * LIGHT_FALLOFF_DISTANCE_SCALE, 1e-4f);
     const float r2 = falloffDist * falloffDist;
     if (r2 <= 0.0f)
         return 0.0f;
 
-    // Scene-export local lights match UE perceptually much closer when treated as candela-like
-    // intensities rather than dividing by an extra 4*pi factor.
-    float attenuation = ((light.type == LIGHT_TYPE_AREA) ? INV_PI : 1.0f) / r2;
+    // Export does not currently include explicit intensity units. Keep inverse-square in meters,
+    // then apply a practical per-type calibration so point lights provide broad spherical fill
+    // while spot lights remain directional accents.
+    float attenuation = ((light.type == LIGHT_TYPE_AREA) ? INV_PI : INV_4PI) / r2;
+    float exposureScale = LOCAL_LIGHT_EXPOSURE_GPU;
+    float attenuationRadiusScale = LIGHT_ATTENUATION_RADIUS_SCALE;
+    if (light.type == LIGHT_TYPE_POINT)
+    {
+        exposureScale *= 2.2f;
+        attenuationRadiusScale *= 1.55f;
+    }
+    else if (light.type == LIGHT_TYPE_SPOT)
+    {
+        exposureScale *= 0.72f;
+        attenuationRadiusScale *= 0.90f;
+    }
+    attenuation *= exposureScale;
 
     if (light.attenuationRadius > 0.0f)
     {
-        const float R = light.attenuationRadius * LIGHT_ATTENUATION_RADIUS_SCALE;
+        const float R = light.attenuationRadius * attenuationRadiusScale;
         if (dist >= R)
             return 0.0f;
 
         const float s = dist / R;
         const float s2 = s * s;
-        const float num = (1.0f - s2) * (1.0f - s2);
-        const float den = 1.0f + s2;
-        attenuation *= (den > 0.0f) ? (num / den) : 0.0f;
+        const float s4 = s2 * s2;
+
+        // Keep inverse-square energy through most of the influence radius and only
+        // roll off near the edge. The previous normalized curve collapsed too early,
+        // which made wall-mounted point lights die before reaching floor/ceiling.
+        float radiusFade = clamp(1.0f - s4, 0.0f, 1.0f);
+        radiusFade *= radiusFade;
+
+        if (light.type == LIGHT_TYPE_POINT)
+        {
+            // UE fixture point lights should keep a broad spherical footprint and only
+            // fade close to the practical attenuation boundary.
+            const float edgeBlend = smoothstep(0.82f, 1.0f, s);
+            radiusFade = mix(1.0f, radiusFade, edgeBlend);
+        }
+        else if (light.type == LIGHT_TYPE_SPOT)
+        {
+            // Keep spot lights a bit tighter so they do not swallow the isotropic fill.
+            radiusFade *= (1.0f - 0.18f * smoothstep(0.55f, 1.0f, s));
+        }
+
+        attenuation *= radiusFade;
     }
 
     return attenuation;
@@ -547,6 +654,23 @@ inline float computeSpotFactor(const device LightGPU& light,
     float t = (cosTheta - cosOuter) / (cosInner - cosOuter);
     t = clamp01(t);
     return t * t;
+}
+
+inline bool shouldIgnoreOwnerShadowForLight(const device LightGPU& light)
+{
+    if (light.ownerId == 0u)
+        return false;
+
+    const float effectiveRadius = max(light.radius, light.softSourceRadius);
+    const float halfLength = max(light.sourceLength, 0.0f) * 0.5f;
+    const float sourceExtent = max(effectiveRadius, halfLength);
+    if (sourceExtent <= 0.0f || light.attenuationRadius <= 0.0f)
+        return false;
+
+    // Large elongated fixtures typically place the light inside a translucent cover,
+    // so skipping the owner avoids trapping the light. Compact bulbs need the housing
+    // to keep the beam from leaking into the wall or all directions.
+    return (sourceExtent / max(light.attenuationRadius, 1.0e-4f)) >= 0.06f;
 }
 
 inline bool materialHasPBRFlag(int matId,
@@ -1601,6 +1725,7 @@ inline bool traceShadowSceneBVHSkippingThin(const device BVHNode *tlasNodes,
                                             int tlasRootIndex,
                                             const device MaterialGPU_PBR *materialsPBR,
                                             uint materialPBRCount,
+                                            uint ignoreOwnerId,
                                             const Ray worldRay,
                                             float maxDist)
 {
@@ -1615,8 +1740,18 @@ inline bool traceShadowSceneBVHSkippingThin(const device BVHNode *tlasNodes,
         if (!(hit.hit && hit.t > 1.0e-4f && hit.t < remainingDist))
             return false;
 
-        if (!materialHasPBRFlag(hit.materialIndex, MATERIAL_FLAG_THIN_EMISSIVE_SURFACE,
-                                materialsPBR, materialPBRCount))
+        bool skipHit = materialHasPBRFlag(hit.materialIndex, MATERIAL_FLAG_THIN_EMISSIVE_SURFACE,
+                                          materialsPBR, materialPBRCount);
+        if (!skipHit && instances != nullptr && hit.instanceIndex >= 0 && uint(hit.instanceIndex) < instanceCount)
+        {
+            const device SceneInstanceGPU &inst = instances[uint(hit.instanceIndex)];
+            if ((inst.flags & INSTANCE_FLAG_CASTS_SHADOW) == 0u)
+                skipHit = true;
+            else if (ignoreOwnerId != 0u && inst.ownerId == ignoreOwnerId)
+                skipHit = true;
+        }
+
+        if (!skipHit)
             return true;
 
         const float advance = hit.t + SHADOW_EPS;
@@ -2271,6 +2406,10 @@ inline float3 computeLightingAtPoint(
         const device LightGPU &light = lights[i];
 
         int   type    = light.type;
+        if (LIGHTING_CALIBRATION_MODE == 5 && type != LIGHT_TYPE_POINT)
+            continue;
+        if (LIGHTING_CALIBRATION_MODE == 6 && type != LIGHT_TYPE_SPOT)
+            continue;
         float3 lp     = float3(light.position);
         float3 ld     = safeNormalize(float3(light.direction));
 
@@ -2306,7 +2445,7 @@ inline float3 computeLightingAtPoint(
         float attenuation = 1.0f;
         if (hasFinite)
         {
-            attenuation = computeFiniteLightAttenuation(light, dist);
+            attenuation = computeFiniteLightAttenuation(light, dist, 0.01f);
             if (attenuation <= 0.0f)
                 continue;
         }
@@ -2431,7 +2570,7 @@ inline float3 sampleDirectEmissiveLightingTexturedInstanced(float3 hitPos,
     shadowRay.direction = L;
     if (traceShadowSceneBVHSkippingThin(tlasNodes, meshNodes, triangles, instances,
                                         tlasNodeCount, meshNodeCount, instanceCount,
-                                        rootIndex, materialsPBR, materialPBRCount,
+                                        rootIndex, materialsPBR, materialPBRCount, 0u,
                                         shadowRay, maxDist))
         return float3(0.0f);
 
@@ -2475,6 +2614,7 @@ inline float3 computeLightingAtPointInstanced(
     int                           rootIndex,
     const device LightGPU        *lights,
     uint                          lightCount,
+    float                         worldUnitToMeters,
     const device MaterialGPU_PBR *materialsPBR,
     uint                          materialPBRCount,
     uint                          baseSeed)
@@ -2537,7 +2677,7 @@ inline float3 computeLightingAtPointInstanced(
         float attenuation = 1.0f;
         if (hasFinite)
         {
-            attenuation = computeFiniteLightAttenuation(light, dist);
+            attenuation = computeFiniteLightAttenuation(light, dist, worldUnitToMeters);
             if (attenuation <= 0.0f)
                 continue;
         }
@@ -2567,12 +2707,17 @@ inline float3 computeLightingAtPointInstanced(
         Ray shadowRay;
         shadowRay.origin = shadowOrigin;
         shadowRay.direction  = L;
-        if (traceShadowSceneBVHSkippingThin(tlasNodes, meshNodes, triangles, instances,
-                                            tlasNodeCount, meshNodeCount, instanceCount,
-                                            rootIndex, materialsPBR, materialPBRCount,
-                                            shadowRay, maxDist))
+        if ((light.flags & LIGHT_FLAG_CASTS_SHADOW) != 0u)
         {
-            continue;
+            const uint ignoreOwnerId =
+                shouldIgnoreOwnerShadowForLight(light) ? light.ownerId : 0u;
+            if (traceShadowSceneBVHSkippingThin(tlasNodes, meshNodes, triangles, instances,
+                                                tlasNodeCount, meshNodeCount, instanceCount,
+                                                rootIndex, materialsPBR, materialPBRCount,
+                                                ignoreOwnerId, shadowRay, maxDist))
+            {
+                continue;
+            }
         }
 
         float3 lightColor = float3(light.color) * intensity;
@@ -2599,6 +2744,381 @@ inline float3 computeLightingAtPointInstanced(
         float3 brdf = diffuse + spec;
 
         result += lightColor * brdf * NdL;
+    }
+
+    return result;
+}
+
+inline float computeAirDustDensityWeightAtPoint(float3 p,
+                                                const device AirDustVolumeGPU& volume)
+{
+    float3 extent = max(float3(volume.extentX, volume.extentY, volume.extentZ), float3(1.0f));
+    float3 q = (p - float3(volume.centerX, volume.centerY, volume.centerZ)) / extent;
+    float r2 = dot(q, q);
+    float core = clamp(1.0f - r2, 0.0f, 1.0f);
+    return core * core;
+}
+
+inline float henyeyGreensteinPhase(float cosTheta, float g)
+{
+    g = clamp(g, -0.95f, 0.95f);
+    float gg = g * g;
+    float denom = pow(max(1.0f + gg - 2.0f * g * cosTheta, 1.0e-4f), 1.5f);
+    return (1.0f - gg) / max(4.0f * PI * denom, 1.0e-4f);
+}
+
+inline PrimaryMediumSample evaluatePrimaryMediumAtPoint(float3 p,
+                                                        float distanceAlongRay,
+                                                        PrimaryVolumeParams pp,
+                                                        const device AirDustVolumeGPU *airDustVolumes,
+                                                        uint airDustVolumeCount)
+{
+    PrimaryMediumSample sample{};
+    sample.sigmaT = 0.0f;
+    sample.albedo = float3(0.0f);
+    sample.anisotropy = 0.0f;
+    sample.ambientTint = float3(0.0f);
+
+    const float worldToMeters = max(pp.worldUnitToMeters, 1.0e-4f);
+
+    float globalSigmaT = 0.0f;
+    if (pp.fogDensity > 1.0e-6f && distanceAlongRay >= max(pp.fogStartDistance, 0.0f))
+    {
+        const float heightMeters = (p.z - pp.fogHeightZ) * worldToMeters;
+        const float exponent = clamp(-pp.fogHeightFalloff * heightMeters, -10.0f, 10.0f);
+        const float heightFactor = exp(exponent);
+        globalSigmaT = max(pp.fogDensity, 0.0f) * max(pp.fogExtinctionScale, 0.0f) * heightFactor;
+    }
+
+    float localSigmaT = 0.0f;
+    float localAnisotropyWeighted = 0.0f;
+    for (uint i = 0u; i < airDustVolumeCount; ++i)
+    {
+        const device AirDustVolumeGPU &volume = airDustVolumes[i];
+        const float shape = computeAirDustDensityWeightAtPoint(p, volume);
+        if (shape <= 1.0e-4f)
+            continue;
+
+        const float sigma = max(volume.density, 0.0f) * shape;
+        localSigmaT += sigma;
+        localAnisotropyWeighted += sigma * clamp(volume.anisotropy, -0.95f, 0.95f);
+    }
+
+    sample.sigmaT = globalSigmaT + localSigmaT;
+    if (sample.sigmaT <= 1.0e-6f)
+        return sample;
+
+    float3 globalAlbedo = clamp(float3(pp.fogAlbedoX, pp.fogAlbedoY, pp.fogAlbedoZ),
+                                float3(0.0f), float3(1.0f));
+    if (luminance3(globalAlbedo) <= 1.0e-5f)
+    {
+        globalAlbedo = clamp(float3(pp.fogColorX, pp.fogColorY, pp.fogColorZ),
+                             float3(0.0f), float3(1.0f));
+    }
+
+    const float3 localAlbedo = float3(0.96f);
+    sample.albedo = (globalAlbedo * globalSigmaT + localAlbedo * localSigmaT) / max(sample.sigmaT, 1.0e-6f);
+    sample.ambientTint = float3(pp.fogColorX, pp.fogColorY, pp.fogColorZ) *
+                         (globalSigmaT / max(sample.sigmaT, 1.0e-6f));
+    sample.anisotropy = clamp((clamp(pp.fogScatteringG, -0.95f, 0.95f) * globalSigmaT +
+                               localAnisotropyWeighted) / max(sample.sigmaT, 1.0e-6f),
+                              -0.95f, 0.95f);
+    return sample;
+}
+
+inline float computeVolumeLightImportance(const device LightGPU& light,
+                                          float3 samplePos,
+                                          float worldUnitToMeters)
+{
+    const float colorWeight = max(luminance3(float3(light.color)), 1.0e-3f);
+    const float baseWeight = max(light.intensity, 0.0f) * colorWeight;
+    if (baseWeight <= 1.0e-6f)
+        return 0.0f;
+
+    const int type = light.type;
+    const float3 lightPos = float3(light.position);
+    const float3 lightDir = safeNormalize(float3(light.direction));
+
+    if (type == LIGHT_TYPE_DIRECTIONAL)
+        return baseWeight;
+
+    const float3 toLight = lightPos - samplePos;
+    const float dist = length(toLight);
+    if (dist <= 1.0e-4f)
+        return 0.0f;
+
+    float weight = baseWeight * computeFiniteLightAttenuation(light, dist, worldUnitToMeters);
+    if (weight <= 1.0e-8f)
+        return 0.0f;
+
+    if (type == LIGHT_TYPE_SPOT)
+        weight *= computeSpotFactor(light, lightPos, samplePos);
+
+    if (type == LIGHT_TYPE_AREA)
+    {
+        const float cosEmit = dot(lightDir, safeNormalize(samplePos - lightPos));
+        if (cosEmit <= 0.0f)
+            return 0.0f;
+        weight *= cosEmit;
+    }
+
+    return max(weight, 0.0f);
+}
+
+inline bool sampleVolumeLightIndex(float3 samplePos,
+                                   const device LightGPU *lights,
+                                   uint lightCount,
+                                   float worldUnitToMeters,
+                                   uint seedSelect,
+                                   thread uint& outLightIndex,
+                                   thread float& outPmf)
+{
+    outLightIndex = 0u;
+    outPmf = 0.0f;
+    if (lights == nullptr || lightCount == 0u)
+        return false;
+
+    float totalWeight = 0.0f;
+    for (uint i = 0u; i < lightCount; ++i)
+        totalWeight += computeVolumeLightImportance(lights[i], samplePos, worldUnitToMeters);
+
+    if (totalWeight <= 1.0e-8f)
+        return false;
+
+    float target = rand01(seedSelect) * totalWeight;
+    float accum = 0.0f;
+    uint fallbackIndex = 0u;
+    float fallbackWeight = 0.0f;
+    for (uint i = 0u; i < lightCount; ++i)
+    {
+        const float w = computeVolumeLightImportance(lights[i], samplePos, worldUnitToMeters);
+        if (w <= 0.0f)
+            continue;
+
+        fallbackIndex = i;
+        fallbackWeight = w;
+        accum += w;
+        if (target <= accum)
+        {
+            outLightIndex = i;
+            outPmf = w / totalWeight;
+            return true;
+        }
+    }
+
+    if (fallbackWeight > 0.0f)
+    {
+        outLightIndex = fallbackIndex;
+        outPmf = fallbackWeight / totalWeight;
+        return true;
+    }
+
+    return false;
+}
+
+inline float3 computePrimaryVolumeAmbientSource(const PrimaryMediumSample medium)
+{
+    if (luminance3(medium.ambientTint) <= 1.0e-6f)
+        return float3(0.0f);
+
+    return medium.ambientTint * 0.025f;
+}
+
+inline float3 samplePrimaryVolumeExplicitLight(float3 samplePos,
+                                               float3 rayDir,
+                                               const PrimaryMediumSample medium,
+                                               PrimaryVolumeParams pp,
+                                               const device LightGPU *lights,
+                                               uint lightCount,
+                                               const device BVHNode *tlasNodes,
+                                               const device BVHNode *meshNodes,
+                                               const device Triangle *triangles,
+                                               const device SceneInstanceGPU *instances,
+                                               uint tlasNodeCount,
+                                               uint meshNodeCount,
+                                               uint instanceCount,
+                                               int rootIndex,
+                                               const device MaterialGPU_PBR *materialsPBR,
+                                               uint materialPBRCount,
+                                               uint seedSelect,
+                                               uint seedA,
+                                               uint seedB,
+                                               uint seedC)
+{
+    (void)pp;
+    uint lightIndex = 0u;
+    float lightPmf = 0.0f;
+    if (!sampleVolumeLightIndex(samplePos, lights, lightCount, pp.worldUnitToMeters,
+                                seedSelect, lightIndex, lightPmf))
+        return float3(0.0f);
+
+    const device LightGPU &light = lights[lightIndex];
+    const int type = light.type;
+    float3 lightPos = float3(light.position);
+    const float3 lightDir = safeNormalize(float3(light.direction));
+
+    float3 L = float3(0.0f);
+    float dist = 1.0f;
+    bool hasFinite = true;
+
+    if (type == LIGHT_TYPE_DIRECTIONAL)
+    {
+        L = -lightDir;
+        hasFinite = false;
+    }
+    else
+    {
+        if (type == LIGHT_TYPE_POINT || type == LIGHT_TYPE_SPOT)
+            lightPos = sampleFiniteLightPosition(light, seedA, seedB, seedC);
+
+        const float3 toLight = lightPos - samplePos;
+        dist = length(toLight);
+        if (dist <= 1.0e-4f)
+            return float3(0.0f);
+        L = toLight / dist;
+    }
+
+    float attenuation = 1.0f;
+    if (hasFinite)
+    {
+        attenuation = computeFiniteLightAttenuation(light, dist, pp.worldUnitToMeters);
+        if (attenuation <= 0.0f)
+            return float3(0.0f);
+    }
+
+    float intensity = light.intensity * attenuation;
+    if (type == LIGHT_TYPE_SPOT)
+    {
+        intensity *= computeSpotFactor(light, lightPos, samplePos);
+        if (intensity <= 0.0f)
+            return float3(0.0f);
+    }
+
+    if (type == LIGHT_TYPE_AREA)
+    {
+        const float cosEmit = dot(lightDir, safeNormalize(samplePos - lightPos));
+        if (cosEmit <= 0.0f)
+            return float3(0.0f);
+        intensity *= cosEmit;
+        if (intensity <= 0.0f)
+            return float3(0.0f);
+    }
+
+    const float maxDist = hasFinite ? (dist - SHADOW_EPS) : -1.0f;
+    Ray shadowRay;
+    shadowRay.origin = samplePos + L * SHADOW_EPS;
+    shadowRay.direction = L;
+    if ((light.flags & LIGHT_FLAG_CASTS_SHADOW) != 0u)
+    {
+        const uint ignoreOwnerId =
+            shouldIgnoreOwnerShadowForLight(light) ? light.ownerId : 0u;
+        if (traceShadowSceneBVHSkippingThin(tlasNodes, meshNodes, triangles, instances,
+                                            tlasNodeCount, meshNodeCount, instanceCount,
+                                            rootIndex, materialsPBR, materialPBRCount,
+                                            ignoreOwnerId, shadowRay, maxDist))
+        {
+            return float3(0.0f);
+        }
+    }
+
+    const float phase = henyeyGreensteinPhase(dot(rayDir, L), medium.anisotropy);
+    const float3 Li = float3(light.color) * intensity;
+    return Li * (phase / max(lightPmf, 1.0e-6f));
+}
+
+inline PrimaryVolumetricResult integratePrimaryVolumetrics(const Ray ray,
+                                                           float maxDistance,
+                                                           PrimaryVolumeParams pp,
+                                                           const device AirDustVolumeGPU *airDustVolumes,
+                                                           uint airDustVolumeCount,
+                                                           const device LightGPU *lights,
+                                                           uint lightCount,
+                                                           const device BVHNode *tlasNodes,
+                                                           const device BVHNode *meshNodes,
+                                                           const device Triangle *triangles,
+                                                           const device SceneInstanceGPU *instances,
+                                                           uint tlasNodeCount,
+                                                           uint meshNodeCount,
+                                                           uint instanceCount,
+                                                           int rootIndex,
+                                                           const device MaterialGPU_PBR *materialsPBR,
+                                                           uint materialPBRCount,
+                                                           uint seedBase)
+{
+    PrimaryVolumetricResult result;
+    result.inscattering = float3(0.0f);
+    result.transmittance = float3(1.0f);
+
+    if (maxDistance <= 1.0e-4f)
+        return result;
+    if (pp.fogDensity <= 1.0e-6f && airDustVolumeCount == 0u)
+        return result;
+
+    const float worldToMeters = max(pp.worldUnitToMeters, 1.0e-4f);
+    const float marchStart = max(pp.nearPlane, 0.0f);
+    const float marchEnd = min(maxDistance, pp.farPlane);
+    if (marchEnd <= marchStart + 1.0e-4f)
+        return result;
+
+    const float marchDistance = marchEnd - marchStart;
+    const float marchDistanceMeters = marchDistance * worldToMeters;
+    int stepCount = clamp(int(ceil(max(marchDistanceMeters, 1.0f) * 0.45f)), 8, 28);
+    if (airDustVolumeCount > 0u)
+        stepCount = min(stepCount + 4, 32);
+
+    const float stepSize = marchDistance / float(stepCount);
+    const float stepSizeMeters = stepSize * worldToMeters;
+    const float jitter = rand01(seedBase ^ 0x51C3u);
+    const float minTransmittance = max(0.0f, 1.0f - clamp01(pp.fogMaxOpacity));
+
+    for (int step = 0; step < stepCount; ++step)
+    {
+        float tSample = marchStart + (float(step) + jitter) * stepSize;
+        tSample = clamp(tSample, marchStart, marchEnd - 0.5f * stepSize);
+
+        const float3 samplePos = ray.origin + ray.direction * tSample;
+        const PrimaryMediumSample medium =
+            evaluatePrimaryMediumAtPoint(samplePos, tSample, pp, airDustVolumes, airDustVolumeCount);
+        if (medium.sigmaT <= 1.0e-6f)
+            continue;
+
+        const float stepTransmittance = exp(-medium.sigmaT * stepSizeMeters);
+        const float stepScatter = 1.0f - stepTransmittance;
+        if (stepScatter <= 1.0e-6f)
+            continue;
+
+        float3 source = computePrimaryVolumeAmbientSource(medium);
+        if (lights != nullptr && lightCount > 0u)
+        {
+            const uint stepSeed = seedBase ^ (0x9E3779B9u * uint(step + 1));
+            source += samplePrimaryVolumeExplicitLight(samplePos,
+                                                       ray.direction,
+                                                       medium,
+                                                       pp,
+                                                       lights,
+                                                       lightCount,
+                                                       tlasNodes,
+                                                       meshNodes,
+                                                       triangles,
+                                                       instances,
+                                                       tlasNodeCount,
+                                                       meshNodeCount,
+                                                       instanceCount,
+                                                       rootIndex,
+                                                       materialsPBR,
+                                                       materialPBRCount,
+                                                       stepSeed ^ 0x11u,
+                                                       stepSeed ^ 0x23u,
+                                                       stepSeed ^ 0x47u,
+                                                       stepSeed ^ 0x83u);
+        }
+
+        result.inscattering += result.transmittance * (medium.albedo * stepScatter) * source;
+        result.transmittance *= stepTransmittance;
+        result.transmittance = max(result.transmittance, float3(minTransmittance));
+
+        if (max(result.transmittance.x, max(result.transmittance.y, result.transmittance.z)) <= 1.0e-3f)
+            break;
     }
 
     return result;
@@ -2632,6 +3152,9 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                      uint                    emissiveTriangleCount,
                                                      const device DecalGPU   *decals,
                                                      uint                    decalCount,
+                                                     constant PrimaryVolumeParams *volumeParamsPtr,
+                                                     const device AirDustVolumeGPU *airDustVolumes,
+                                                     uint                    airDustVolumeCount,
                                                      const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
 {
     PathTraceTextureResult result;
@@ -2653,6 +3176,11 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
     int spp = samplesPerPixel;
     if (spp <= 0) spp = 1;
     if (UV_DEBUG_MODE != 0) spp = 1;
+
+    PrimaryVolumeParams volumeParams{};
+    if (volumeParamsPtr != nullptr)
+        volumeParams = *volumeParamsPtr;
+    volumeParams.worldUnitToMeters = max(volumeParams.worldUnitToMeters, 1.0e-4f);
 
     int strataDim   = (int)floor(sqrt((float)spp));
     if (strataDim < 1) strataDim = 1;
@@ -2698,6 +3226,35 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
         for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce)
         {
             HitInfo hit = traceRaySceneBVH(tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex, ray);
+            const bool isPrimaryCameraSegment = (prevWasBSDFSample == 0u);
+            if (isPrimaryCameraSegment)
+            {
+                const float segmentMaxDistance = (hit.hit && hit.triIndex >= 0)
+                                               ? hit.t
+                                               : volumeParams.farPlane;
+                const PrimaryVolumetricResult volumeResult =
+                    integratePrimaryVolumetrics(ray,
+                                                segmentMaxDistance,
+                                                volumeParams,
+                                                airDustVolumes,
+                                                airDustVolumeCount,
+                                                lights,
+                                                lightCount,
+                                                tlasNodes,
+                                                meshNodes,
+                                                triangles,
+                                                instances,
+                                                tlasNodeCount,
+                                                meshNodeCount,
+                                                instanceCount,
+                                                rootIndex,
+                                                materialsPBR,
+                                                materialPBRCount,
+                                                seedBase ^ (0x6000u + uint(bounce) * 131u));
+                radiance += throughput * volumeResult.inscattering;
+                throughput *= volumeResult.transmittance;
+            }
+
             if (!(hit.hit && hit.triIndex >= 0))
             {
                 radiance += throughput * environmentColor(normalize(ray.direction));
@@ -2905,7 +3462,8 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             uint lightSeed = seedBase ^ (0x9E3779B9u * (uint(bounce) + 1u));
             float3 directExplicit = computeLightingAtPointInstanced(hitPos, N, Ng, baseColor, metallic, roughness, V,
                                                            tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex,
-                                                           lights, lightCount, materialsPBR, materialPBRCount, lightSeed);
+                                                           lights, lightCount, volumeParams.worldUnitToMeters,
+                                                           materialsPBR, materialPBRCount, lightSeed);
             float3 directEmissive = sampleDirectEmissiveLightingTexturedInstanced(hitPos, N, Ng, V, uint(hit.triIndex), uint(hit.instanceIndex),
                                                                          baseColor, metallic, roughness,
                                                                          tlasNodes, meshNodes, triangles, instances, tlasNodeCount, meshNodeCount, instanceCount, rootIndex,
@@ -2916,6 +3474,32 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                                          seedBase ^ (0x7000u + uint(bounce) * 17u),
                                                                          seedBase ^ (0x7001u + uint(bounce) * 17u),
                                                                          seedBase ^ (0x7002u + uint(bounce) * 17u));
+
+            if (LIGHTING_CALIBRATION_MODE == 2 && bounce == 0)
+            {
+                result.color = max(directExplicit, float3(0.0f));
+                return result;
+            }
+            if (LIGHTING_CALIBRATION_MODE == 5 && bounce == 0)
+            {
+                result.color = max(directExplicit, float3(0.0f));
+                return result;
+            }
+            if (LIGHTING_CALIBRATION_MODE == 6 && bounce == 0)
+            {
+                result.color = max(directExplicit, float3(0.0f));
+                return result;
+            }
+            if (LIGHTING_CALIBRATION_MODE == 3 && bounce == 0)
+            {
+                result.color = max(directEmissive + emitted, float3(0.0f));
+                return result;
+            }
+            if (LIGHTING_CALIBRATION_MODE == 4 && bounce == 0)
+            {
+                result.color = max(directExplicit + directEmissive + emitted, float3(0.0f));
+                return result;
+            }
 
             radiance += throughput * (directExplicit + directEmissive + emitted);
 
@@ -2998,6 +3582,11 @@ struct PostProcessParams
     float colorSaturationY;
     float colorSaturationZ;
     float shadowLift;
+
+    float fogStartDistance;
+    float fogMaxOpacity;
+    float fogHeightZ;
+    float worldUnitToMeters;
 };
 
 inline float hash11(float n)
@@ -3173,6 +3762,9 @@ kernel void RayTraceTextureKernel(
     constant uint                    *decalCountPtr              [[buffer(19)]],
     constant uint                    *meshNodeCountPtr           [[buffer(20)]],
     constant uint                    *instanceCountPtr           [[buffer(21)]],
+    constant PrimaryVolumeParams     *volumeParamsPtr            [[buffer(22)]],
+    const device AirDustVolumeGPU    *airDustVolumes             [[buffer(23)]],
+    constant uint                    *airDustVolumeCountPtr      [[buffer(24)]],
     array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures [[texture(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
@@ -3209,6 +3801,7 @@ kernel void RayTraceTextureKernel(
     uint materialPBRCount = (materialPBRCountPtr != nullptr) ? *materialPBRCountPtr : 0u;
     uint emissiveTriangleCount = (emissiveTriangleCountPtr != nullptr) ? *emissiveTriangleCountPtr : 0u;
     uint decalCount = (decalCountPtr != nullptr) ? *decalCountPtr : 0u;
+    uint airDustVolumeCount = (airDustVolumeCountPtr != nullptr) ? *airDustVolumeCountPtr : 0u;
 
     PathTraceTextureResult pathResult = tracePathPixelTextured(
         gid, imgSize,
@@ -3228,6 +3821,9 @@ kernel void RayTraceTextureKernel(
         emissiveTriangleCount,
         decals,
         decalCount,
+        volumeParamsPtr,
+        airDustVolumes,
+        airDustVolumeCount,
         sceneTextures);
     float3 frameColor = pathResult.color;
     float depthValue = pathResult.depth;
@@ -3464,24 +4060,11 @@ kernel void PostProcessKernel(
     float3 cB = sampleCombined(hdrTex, bloomTex, uv - caOffset);
     float3 color = float3(cR.r, cG.g, cB.b);
 
-    float depth = hdrTex.sample(g_postSampler, uv).a;
-    bool hasSceneHit = (depth < min(pp.farPlane * 0.999f, 1.0e29f));
-    float fogAmount = hasSceneHit ? computeFogAmount(depth, uv, pp) : 0.0f;
-    float3 fogColor = float3(pp.fogColorX, pp.fogColorY, pp.fogColorZ);
-    float3 fogAlbedo = float3(pp.fogAlbedoX, pp.fogAlbedoY, pp.fogAlbedoZ);
-
-    if (pp.fogDensity > 0.0f && hasSceneHit)
-    {
-        float bloomL = luminance3(bloomTex.sample(g_postSampler, uv).rgb);
-        float volumetricBoost = (pp.volumetricFog > 0.5f)
-                              ? min(0.12f, 0.045f * bloomL * (0.65f + max(pp.fogScatteringG, 0.0f)))
-                              : 0.0f;
-        float3 fogLit = fogColor * fogAlbedo * (1.0f + volumetricBoost);
-        color = mix(color, fogLit, fogAmount);
-    }
-
-    if (hasSceneHit && airDustVolumes != nullptr && airDustVolumeCount != nullptr && *airDustVolumeCount > 0u)
-        color += computeAirDustLighting(uv, depth, cam, airDustVolumes, *airDustVolumeCount);
+    // True volumetric integration is handled in the path pass along the primary ray.
+    // Final composite keeps only display-space post processing to avoid double-counting fog/dust.
+    (void)airDustVolumes;
+    (void)airDustVolumeCount;
+    (void)cam;
 
     float3 bloom = bloomTex.sample(g_postSampler, uv).rgb;
     color += bloom * max(pp.bloomIntensity, 0.0f);

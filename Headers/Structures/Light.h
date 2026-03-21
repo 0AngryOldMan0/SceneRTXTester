@@ -2,6 +2,8 @@
 
 #include "Point3D.h"
 
+#include <cstdint>
+
 enum class LightType
 {
     Point       = 0,       // точечный источник (Blender: POINT)
@@ -50,4 +52,7 @@ struct Light
     AreaLightShape areaShape = AreaLightShape::Square;
     float areaSizeX = 0.0f;
     float areaSizeY = 0.0f;
+
+    bool castShadows = true;
+    std::uint32_t ownerId = 0;
 };

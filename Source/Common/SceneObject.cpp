@@ -75,6 +75,16 @@ std::vector<SceneTransformMatrix> &SceneObject::getInstanceTransformsMutable()
     return instanceTransforms_;
 }
 
+const std::vector<SceneObjectInstanceMeta> &SceneObject::getInstanceMetadata() const
+{
+    return instanceMetadata_;
+}
+
+std::vector<SceneObjectInstanceMeta> &SceneObject::getInstanceMetadataMutable()
+{
+    return instanceMetadata_;
+}
+
 std::size_t SceneObject::getInstanceCount() const
 {
     return instanceTransforms_.empty() ? 1u : instanceTransforms_.size();
@@ -153,16 +163,36 @@ void SceneObject::addBVHNode(const BVHNode &node)
 void SceneObject::setInstanceTransforms(const std::vector<SceneTransformMatrix> &transforms)
 {
     instanceTransforms_ = transforms;
+    instanceMetadata_.assign(instanceTransforms_.size(), SceneObjectInstanceMeta{});
 }
 
 void SceneObject::setInstanceTransforms(std::vector<SceneTransformMatrix> &&transforms)
 {
     instanceTransforms_ = std::move(transforms);
+    instanceMetadata_.assign(instanceTransforms_.size(), SceneObjectInstanceMeta{});
 }
 
 void SceneObject::addInstanceTransform(const SceneTransformMatrix &transform)
 {
     instanceTransforms_.push_back(transform);
+    instanceMetadata_.push_back(SceneObjectInstanceMeta{});
+}
+
+void SceneObject::addInstanceTransform(const SceneTransformMatrix &transform,
+                                       const SceneObjectInstanceMeta &meta)
+{
+    instanceTransforms_.push_back(transform);
+    instanceMetadata_.push_back(meta);
+}
+
+void SceneObject::setInstanceMetadata(const std::vector<SceneObjectInstanceMeta> &metadata)
+{
+    instanceMetadata_ = metadata;
+}
+
+void SceneObject::setInstanceMetadata(std::vector<SceneObjectInstanceMeta> &&metadata)
+{
+    instanceMetadata_ = std::move(metadata);
 }
 
 void SceneObject::setMeshAssetId(const std::string &id)
@@ -261,4 +291,5 @@ void SceneObject::clear()
     meshAssetId_.clear();
     meshSpace_.clear();
     instanceTransforms_.clear();
+    instanceMetadata_.clear();
 }

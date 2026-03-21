@@ -10,6 +10,13 @@
 
 using SceneTransformMatrix = std::array<float, 16>;
 
+struct SceneObjectInstanceMeta
+{
+    bool castsShadow = true;
+    std::string actorPath;
+    std::string componentPath;
+};
+
 class SceneObject
 {
 public:
@@ -28,6 +35,8 @@ public:
 
     const std::vector<SceneTransformMatrix> &getInstanceTransforms() const;
     std::vector<SceneTransformMatrix> &getInstanceTransformsMutable();
+    const std::vector<SceneObjectInstanceMeta> &getInstanceMetadata() const;
+    std::vector<SceneObjectInstanceMeta> &getInstanceMetadataMutable();
     std::size_t getInstanceCount() const;
     bool hasInstances() const;
 
@@ -55,6 +64,10 @@ public:
     void setInstanceTransforms(const std::vector<SceneTransformMatrix> &transforms);
     void setInstanceTransforms(std::vector<SceneTransformMatrix> &&transforms);
     void addInstanceTransform(const SceneTransformMatrix &transform);
+    void addInstanceTransform(const SceneTransformMatrix &transform,
+                              const SceneObjectInstanceMeta &meta);
+    void setInstanceMetadata(const std::vector<SceneObjectInstanceMeta> &metadata);
+    void setInstanceMetadata(std::vector<SceneObjectInstanceMeta> &&metadata);
 
     void setMeshAssetId(const std::string &id);
     void setMeshSpace(const std::string &space);
@@ -95,4 +108,5 @@ private:
     std::string meshAssetId_;
     std::string meshSpace_;
     std::vector<SceneTransformMatrix> instanceTransforms_;
+    std::vector<SceneObjectInstanceMeta> instanceMetadata_;
 };

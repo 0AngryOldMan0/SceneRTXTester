@@ -287,6 +287,10 @@ namespace
         outFog.fogDensity        = ReadFloatField(obj, "fog_density", 0.0f);
         outFog.heightFalloff     = ReadFloatField(obj, "fog_height_falloff", 0.0f);
         outFog.inscatteringColor = ReadVec3Field(obj, "fog_inscattering_color", Vec3{1,1,1});
+        outFog.maxOpacity        = ReadFloatField(obj, "fog_max_opacity", 1.0f);
+        outFog.startDistance     = ReadFloatField(obj, "start_distance", 0.0f);
+        outFog.actorPath         = ReadStringField(obj, "actor_path", std::string{});
+        outFog.componentPath     = ReadStringField(obj, "component_path", std::string{});
 
         if (auto itV = obj.find("volumetric_fog"); itV != obj.end())
             outFog.volumetricFog = itV->get<bool>();
@@ -341,7 +345,11 @@ namespace
             c.hasPostProcess = ParsePostProcessFromJson(*itPP, c.postProcess);
 
         if (auto itFog = jc.find("fog"); itFog != jc.end() && itFog->is_object())
+        {
             c.hasFog = ParseFogFromJson(*itFog, c.fog);
+            if (c.hasFog)
+                c.fog.startDistance *= unitScale;
+        }
 
         return c;
     }
@@ -523,6 +531,20 @@ static bool IsSpecialVisibleEmissiveSurface(std::string_view materialNameLower,
             return (s > 0.0f) ? s : 1.0f;
         }
         return 1.0f;
+    }
+
+    static std::uint32_t HashStableString32(const std::string& s)
+    {
+        constexpr std::uint32_t kOffset = 2166136261u;
+        constexpr std::uint32_t kPrime  = 16777619u;
+
+        std::uint32_t hash = kOffset;
+        for (unsigned char ch : s)
+        {
+            hash ^= static_cast<std::uint32_t>(ch);
+            hash *= kPrime;
+        }
+        return hash;
     }
 
     static bool ReadBoolFieldLoose(const json& obj, const char* key, bool def)
@@ -884,6 +906,78 @@ static bool IsSpecialVisibleEmissiveSurface(std::string_view materialNameLower,
         return Vec3{m[3], m[7], m[11]};
     }
 
+    static bool ResolveSceneExportActorOrComponentPosition(const json& j,
+                                                           const std::string& actorPath,
+                                                           const std::string& componentPath,
+                                                           float unitScale,
+                                                           Vec3& outPosition)
+    {
+        auto itActors = j.find("actors");
+        if (itActors == j.end() || !itActors->is_array())
+            return false;
+
+        auto readWorldPosition = [&](const json& obj, Vec3& outPos) -> bool
+        {
+            if (!obj.is_object())
+                return false;
+
+            if (auto itM = obj.find("transform_matrix"); itM != obj.end() && itM->is_array() && itM->size() >= 16)
+            {
+                const std::array<float, 16> m = ReadMatrix4Field(obj, "transform_matrix");
+                outPos = MatrixPosition(m);
+                outPos.x *= unitScale;
+                outPos.y *= unitScale;
+                outPos.z *= unitScale;
+                return true;
+            }
+
+            if (auto itB = obj.find("bounds"); itB != obj.end() && itB->is_object())
+            {
+                outPos = ReadVec3Field(*itB, "origin", Vec3{0.0f, 0.0f, 0.0f});
+                outPos.x *= unitScale;
+                outPos.y *= unitScale;
+                outPos.z *= unitScale;
+                return true;
+            }
+
+            return false;
+        };
+
+        for (const json& actor : *itActors)
+        {
+            if (!actor.is_object())
+                continue;
+
+            const std::string thisActorPath = ReadStringField(actor, "actor_path", std::string{});
+            if (!actorPath.empty() && thisActorPath != actorPath)
+                continue;
+
+            if (!componentPath.empty())
+            {
+                if (auto itComps = actor.find("components"); itComps != actor.end() && itComps->is_array())
+                {
+                    for (const json& comp : *itComps)
+                    {
+                        if (!comp.is_object())
+                            continue;
+
+                        const std::string thisComponentPath = ReadStringField(comp, "component_path", std::string{});
+                        if (thisComponentPath != componentPath)
+                            continue;
+
+                        if (readWorldPosition(comp, outPosition))
+                            return true;
+                    }
+                }
+            }
+
+            if (readWorldPosition(actor, outPosition))
+                return true;
+        }
+
+        return false;
+    }
+
     // Transform matrix is row-major affine with translation in indices 3/7/11.
     // Basis vectors are extracted from COLUMNS (UE local axes in world space).
     static Vec3 MatrixAxisX(const std::array<float,16>& m)
@@ -1004,7 +1098,11 @@ static SceneMetaCameraInfo ParseSceneExportCameraInfo(const json& jc, float unit
         c.hasPostProcess = ParsePostProcessFromJson(*itPP, c.postProcess);
 
     if (auto itFog = jc.find("fog"); itFog != jc.end() && itFog->is_object())
+    {
         c.hasFog = ParseFogFromJson(*itFog, c.fog);
+        if (c.hasFog)
+            c.fog.startDistance *= unitScale;
+    }
 
     return c;
 }
@@ -1078,6 +1176,16 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
             else if (itFog->is_object())
             {
                 hasFog = ParseFogFromJson(*itFog, fog);
+            }
+        }
+        if (hasFog)
+        {
+            fog.startDistance *= unitScale;
+            Vec3 fogPos{};
+            if (ResolveSceneExportActorOrComponentPosition(j, fog.actorPath, fog.componentPath, unitScale, fogPos))
+            {
+                fog.heightReferenceZ = fogPos.z;
+                fog.hasHeightReference = true;
             }
         }
 
@@ -1490,6 +1598,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 l.radius    = ReadFloatField(jl, "source_radius", 0.0f) * unitScale;
                 l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
                 l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
+                l.castShadows = ReadBoolFieldLoose(jl, "cast_shadows", true);
 
                 const float innerDeg = ReadFloatField(jl, "inner_cone_angle", 0.0f);
                 const float outerDeg = ReadFloatField(jl, "outer_cone_angle", 0.0f);
@@ -1499,6 +1608,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     l.spotBlend = std::clamp(1.0f - (innerDeg / outerDeg), 0.0f, 1.0f);
 
                 l.attenuationRadius = ReadFloatField(jl, "attenuation_radius", 0.0f) * unitScale;
+                l.ownerId = HashStableString32(ReadStringField(jl, "actor_path", std::string{}));
 
                 scene.addLight(l);
 
@@ -1751,6 +1861,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
             outRes->cameras           = std::move(parsedCameras);
             outRes->decals            = std::move(parsedDecals);
             outRes->airDustVolumes    = std::move(parsedAirDustVolumes);
+            outRes->worldUnitToMeters = std::max(unitScale * 0.01f, 1.0e-4f);
             outRes->hasPostProcess    = hasPostProcess;
             outRes->postProcess       = postProcess;
             outRes->hasFog            = hasFog;
@@ -1907,7 +2018,11 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
     bool hasFog = false;
     SceneMetaFog fog{};
     if (auto itFog = j.find("fog"); itFog != j.end() && itFog->is_object())
+    {
         hasFog = ParseFogFromJson(*itFog, fog);
+        if (hasFog)
+            fog.startDistance *= unitScale;
+    }
 
     std::vector<SceneMetaCameraInfo> parsedCameras;
     std::string mainCamName;
@@ -1962,11 +2077,13 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             l.radius    = ReadFloatField(jl, "radius", 0.0f) * unitScale;
             l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
             l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
+            l.castShadows = ReadBoolFieldLoose(jl, "cast_shadows", true);
 
             l.spotSize  = ReadFloatField(jl, "spot_size", 0.0f);
             l.spotBlend = clamp01(ReadFloatField(jl, "spot_blend", 0.0f));
 
             l.attenuationRadius = ReadFloatField(jl, "attenuation_radius", 0.0f) * unitScale;
+            l.ownerId = HashStableString32(ReadStringField(jl, "actor_path", std::string{}));
 
             scene.addLight(l);
         }
@@ -2407,6 +2524,7 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
         outRes->materialsPBR      = outRes->materials; // keep naming stable for backends
         outRes->cameras           = std::move(parsedCameras);
         outRes->decals            = std::move(parsedDecals);
+        outRes->worldUnitToMeters = std::max(unitScale, 1.0e-4f);
         outRes->hasPostProcess    = hasPostProcess;
         outRes->postProcess       = postProcess;
         outRes->hasFog            = hasFog;
