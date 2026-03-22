@@ -2,6 +2,7 @@
 
 #ifndef __HIP_DEVICE_COMPILE__
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -2629,6 +2630,8 @@ __global__ void RayTraceTextureKernel(const BVHNode *tlasNodes,
 #ifndef __HIP_DEVICE_COMPILE__
 namespace
 {
+    using ProfileClock = std::chrono::steady_clock;
+
     template <typename T>
     struct DeviceBuffer
     {
@@ -2662,6 +2665,12 @@ namespace
     };
 
     HIPRuntimeState g_runtime;
+    HIPTextureExecutionProfile g_lastTextureExecutionProfile;
+
+    static double ToMilliseconds(ProfileClock::duration duration)
+    {
+        return std::chrono::duration<double, std::milli>(duration).count();
+    }
 
     template <typename T>
     void ReleaseDeviceBuffer(DeviceBuffer<T> &buffer)
@@ -3005,32 +3014,50 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
     (void)sceneRevision;
     (void)metaGeneration;
 
+    g_lastTextureExecutionProfile = {};
+    const auto totalStart = ProfileClock::now();
+    const auto finalizeProfile = [&]()
+    {
+        g_lastTextureExecutionProfile.totalMs = ToMilliseconds(ProfileClock::now() - totalStart);
+    };
+
     if (camera == nullptr || framebuffer == nullptr)
     {
         std::fprintf(stderr, "HIP_RenderFrameTexture_C: camera/framebuffer is null\n");
+        finalizeProfile();
         return false;
     }
     if (camera->width <= 0 || camera->height <= 0)
     {
         std::fprintf(stderr, "HIP_RenderFrameTexture_C: invalid frame size\n");
+        finalizeProfile();
         return false;
     }
     if (tlasNodes == nullptr || meshNodes == nullptr || triangles == nullptr || instances == nullptr)
     {
         std::fprintf(stderr, "HIP_RenderFrameTexture_C: scene geometry buffers are null\n");
+        finalizeProfile();
         return false;
     }
     if (rootIndex < 0 || rootIndex >= static_cast<int>(tlasNodeCount))
     {
         std::fprintf(stderr, "HIP_RenderFrameTexture_C: invalid TLAS root index\n");
+        finalizeProfile();
         return false;
     }
 
     const std::size_t pixelCount =
         static_cast<std::size_t>(camera->width) * static_cast<std::size_t>(camera->height);
+    const auto ensureOutputStart = ProfileClock::now();
     if (!EnsureDeviceCapacity(g_runtime.outputPixels, pixelCount, "outputPixels"))
+    {
+        finalizeProfile();
         return false;
+    }
+    g_lastTextureExecutionProfile.ensureOutputMs =
+        ToMilliseconds(ProfileClock::now() - ensureOutputStart);
 
+    const auto uploadStart = ProfileClock::now();
     if (!UploadDeviceArray(g_runtime.tlasNodes, tlasNodes, tlasNodeCount, "tlasNodes") ||
         !UploadDeviceArray(g_runtime.meshNodes, meshNodes, meshNodeCount, "meshNodes") ||
         !UploadDeviceArray(g_runtime.triangles, triangles, triCount, "triangles") ||
@@ -3065,8 +3092,11 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
         !UploadDeviceArray(g_runtime.textureDescs, textureDescs, textureCount, "textureDescs") ||
         !UploadDeviceArray(g_runtime.textureTexels, textureTexels, textureTexelBytes, "textureTexels"))
     {
+        finalizeProfile();
         return false;
     }
+    g_lastTextureExecutionProfile.uploadSceneMs =
+        ToMilliseconds(ProfileClock::now() - uploadStart);
 
     const CameraData cameraGpu = *camera;
     PrimaryVolumeParams volumeParams{};
@@ -3092,6 +3122,7 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
                     (static_cast<unsigned int>(camera->height) + BLOCK_SIZE - 1u) / BLOCK_SIZE,
                     1u);
 
+    const auto kernelStart = ProfileClock::now();
     hipLaunchKernelGGL(RayTraceTextureKernel,
                        grid,
                        block,
@@ -3127,6 +3158,8 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
     if (err != hipSuccess)
     {
         std::fprintf(stderr, "HIP: kernel launch failed (%s)\n", hipGetErrorString(err));
+        g_lastTextureExecutionProfile.kernelMs = ToMilliseconds(ProfileClock::now() - kernelStart);
+        finalizeProfile();
         return false;
     }
 
@@ -3134,9 +3167,13 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
     if (err != hipSuccess)
     {
         std::fprintf(stderr, "HIP: kernel execution failed (%s)\n", hipGetErrorString(err));
+        g_lastTextureExecutionProfile.kernelMs = ToMilliseconds(ProfileClock::now() - kernelStart);
+        finalizeProfile();
         return false;
     }
+    g_lastTextureExecutionProfile.kernelMs = ToMilliseconds(ProfileClock::now() - kernelStart);
 
+    const auto readbackStart = ProfileClock::now();
     g_runtime.currentFrameHdr.resize(pixelCount);
     err = hipMemcpy(g_runtime.currentFrameHdr.data(),
                     g_runtime.outputPixels.ptr,
@@ -3145,9 +3182,13 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
     if (err != hipSuccess)
     {
         std::fprintf(stderr, "HIP: hipMemcpy D2H failed for outputPixels (%s)\n", hipGetErrorString(err));
+        g_lastTextureExecutionProfile.readbackMs = ToMilliseconds(ProfileClock::now() - readbackStart);
+        finalizeProfile();
         return false;
     }
+    g_lastTextureExecutionProfile.readbackMs = ToMilliseconds(ProfileClock::now() - readbackStart);
 
+    const auto accumulationStart = ProfileClock::now();
     if (g_runtime.accumWidth != camera->width ||
         g_runtime.accumHeight != camera->height ||
         accumulatedSampleCountBefore == 0u ||
@@ -3169,13 +3210,28 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
                 std::max(newCount, 1.0f);
         }
     }
+    g_lastTextureExecutionProfile.accumulationMs =
+        ToMilliseconds(ProfileClock::now() - accumulationStart);
 
     const HIPPostProcessParams fallbackPostParams = (postParams != nullptr) ? *postParams : HIPPostProcessParams{};
+    const auto postProcessStart = ProfileClock::now();
     PostProcessHost(g_runtime.accumulatedHdr,
                     camera->width,
                     camera->height,
                     fallbackPostParams,
                     framebuffer);
+    g_lastTextureExecutionProfile.postProcessMs =
+        ToMilliseconds(ProfileClock::now() - postProcessStart);
+    finalizeProfile();
+    return true;
+}
+
+extern "C" bool HIP_GetLastTextureExecutionProfile_C(HIPTextureExecutionProfile *outProfile)
+{
+    if (outProfile == nullptr)
+        return false;
+
+    *outProfile = g_lastTextureExecutionProfile;
     return true;
 }
 

@@ -239,6 +239,17 @@ struct HIPTextureDescGPU
     std::uint32_t flags = 0u;
 };
 
+struct HIPTextureExecutionProfile
+{
+    double ensureOutputMs = 0.0;
+    double uploadSceneMs = 0.0;
+    double kernelMs = 0.0;
+    double readbackMs = 0.0;
+    double accumulationMs = 0.0;
+    double postProcessMs = 0.0;
+    double totalMs = 0.0;
+};
+
 static_assert(sizeof(HIPSceneInstanceGPU) == 184, "HIPSceneInstanceGPU size must match SceneInstanceGPU");
 static_assert(sizeof(HIPLightGPU) == 76, "HIPLightGPU size must be 76 bytes");
 static_assert(sizeof(HIPMaterialGPU) == 16, "HIPMaterialGPU size must be 16 bytes");
@@ -280,5 +291,7 @@ extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,
                                          std::uint64_t metaGeneration,
                                          std::uint32_t accumulatedSampleCountBefore,
                                          Vec3 *framebuffer);
+
+extern "C" bool HIP_GetLastTextureExecutionProfile_C(HIPTextureExecutionProfile *outProfile);
 
 extern "C" void HIP_ResetAccumulation_C();

@@ -6,11 +6,15 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +69,212 @@ namespace
     std::uint64_t g_accumulationStateHashHost = kInvalidAccumulationHash;
     std::uint32_t g_accumulatedSampleCountHost = 0u;
     std::uint32_t g_previewDispatchCountHost = 0u;
+    std::uint64_t g_textureProfileCallIndexHost = 0u;
+
+    using ProfileClock = std::chrono::steady_clock;
+
+    struct HIPTextureFrameProfile
+    {
+        std::uint64_t callIndex = 0u;
+        std::uint32_t accumulatedSamples = 0u;
+        std::uint32_t samplesThisDispatch = 0u;
+        HIPAccumulationMode accumulationMode = HIPAccumulationMode::PreviewProgressive;
+        std::uint32_t prototypeTriangles = 0u;
+        std::uint32_t totalInstances = 0u;
+        std::uint32_t tlasNodeCount = 0u;
+        std::uint32_t blasNodeCount = 0u;
+        std::uint32_t lightCount = 0u;
+        std::uint32_t materialCount = 0u;
+        std::uint32_t materialPBRCount = 0u;
+        std::uint32_t textureCount = 0u;
+        std::uint32_t emissiveTriangleCount = 0u;
+        std::uint32_t decalCount = 0u;
+        std::uint32_t airDustVolumeCount = 0u;
+        double ensureMetaMs = 0.0;
+        double accumulationStateMs = 0.0;
+        double framebufferResizeMs = 0.0;
+        double instanceConvertMs = 0.0;
+        double lightConvertMs = 0.0;
+        double emissiveBuildMs = 0.0;
+        double postParamsMs = 0.0;
+        double hipCoreMs = 0.0;
+        double totalMs = 0.0;
+        HIPTextureExecutionProfile lowLevel{};
+    };
+
+    struct HIPTextureProfileTotals
+    {
+        std::uint64_t frameCount = 0u;
+        double ensureMetaMs = 0.0;
+        double accumulationStateMs = 0.0;
+        double framebufferResizeMs = 0.0;
+        double instanceConvertMs = 0.0;
+        double lightConvertMs = 0.0;
+        double emissiveBuildMs = 0.0;
+        double postParamsMs = 0.0;
+        double hipCoreMs = 0.0;
+        double totalMs = 0.0;
+        double ensureOutputMs = 0.0;
+        double uploadSceneMs = 0.0;
+        double kernelMs = 0.0;
+        double readbackMs = 0.0;
+        double accumulationMs = 0.0;
+        double postProcessMs = 0.0;
+        double lowLevelTotalMs = 0.0;
+    };
+
+    HIPTextureProfileTotals g_textureProfileTotalsHost;
+
+    static double ToMilliseconds(ProfileClock::duration duration)
+    {
+        return std::chrono::duration<double, std::milli>(duration).count();
+    }
+
+    static std::uint32_t ToU32Count(std::size_t value)
+    {
+        return static_cast<std::uint32_t>(std::min<std::size_t>(value, UINT32_MAX));
+    }
+
+    static const char *AccumulationModeName(HIPAccumulationMode mode)
+    {
+        switch (mode)
+        {
+            case HIPAccumulationMode::PreviewProgressive: return "preview_progressive";
+            case HIPAccumulationMode::FinalStill:         return "final_still";
+        }
+        return "unknown";
+    }
+
+    static void AppendProfileLine(std::ostringstream &oss,
+                                  const char *name,
+                                  double valueMs,
+                                  double totalMs,
+                                  bool showPercent = true)
+    {
+        oss << "    "
+            << std::left << std::setw(18) << name
+            << std::right << std::setw(12) << std::fixed << std::setprecision(3) << valueMs
+            << " ms";
+
+        if (showPercent && totalMs > 0.0)
+        {
+            const double percent = (valueMs * 100.0) / totalMs;
+            oss << "  (" << std::setw(7) << std::fixed << std::setprecision(2) << percent << "%)";
+        }
+
+        oss << "\n";
+    }
+
+    static void AppendCountLine(std::ostringstream &oss,
+                                const char *name,
+                                std::uint32_t value)
+    {
+        oss << "    "
+            << std::left << std::setw(18) << name
+            << std::right << std::setw(12) << value
+            << "\n";
+    }
+
+    static void AppendProfileText(const std::string &textBlock)
+    {
+        std::cout << textBlock;
+        try
+        {
+            const std::filesystem::path outDir = std::filesystem::path("Results");
+            std::filesystem::create_directories(outDir);
+            std::ofstream out(outDir / "ComplexFrameStats.txt", std::ios::out | std::ios::app);
+            if (out)
+                out << textBlock;
+        }
+        catch (...)
+        {
+        }
+    }
+
+    static void PrintTextureFrameProfile(const HIPTextureFrameProfile &profile)
+    {
+        auto &totals = g_textureProfileTotalsHost;
+        totals.frameCount += 1u;
+        totals.ensureMetaMs += profile.ensureMetaMs;
+        totals.accumulationStateMs += profile.accumulationStateMs;
+        totals.framebufferResizeMs += profile.framebufferResizeMs;
+        totals.instanceConvertMs += profile.instanceConvertMs;
+        totals.lightConvertMs += profile.lightConvertMs;
+        totals.emissiveBuildMs += profile.emissiveBuildMs;
+        totals.postParamsMs += profile.postParamsMs;
+        totals.hipCoreMs += profile.hipCoreMs;
+        totals.totalMs += profile.totalMs;
+        totals.ensureOutputMs += profile.lowLevel.ensureOutputMs;
+        totals.uploadSceneMs += profile.lowLevel.uploadSceneMs;
+        totals.kernelMs += profile.lowLevel.kernelMs;
+        totals.readbackMs += profile.lowLevel.readbackMs;
+        totals.accumulationMs += profile.lowLevel.accumulationMs;
+        totals.postProcessMs += profile.lowLevel.postProcessMs;
+        totals.lowLevelTotalMs += profile.lowLevel.totalMs;
+
+        const double inv = (totals.frameCount > 0u)
+                         ? (1.0 / static_cast<double>(totals.frameCount))
+                         : 0.0;
+
+        std::ostringstream oss;
+        oss << "[HIPProfiler][Texture] call=" << profile.callIndex
+            << " mode=" << AccumulationModeName(profile.accumulationMode)
+            << " accumSamples=" << profile.accumulatedSamples
+            << " batchSamples=" << profile.samplesThisDispatch << "\n"
+            << "  scene stats:\n";
+        AppendCountLine(oss, "proto tris", profile.prototypeTriangles);
+        AppendCountLine(oss, "instances", profile.totalInstances);
+        AppendCountLine(oss, "TLAS nodes", profile.tlasNodeCount);
+        AppendCountLine(oss, "BLAS nodes", profile.blasNodeCount);
+        AppendCountLine(oss, "lights", profile.lightCount);
+        AppendCountLine(oss, "materials", profile.materialCount);
+        AppendCountLine(oss, "materialsPBR", profile.materialPBRCount);
+        AppendCountLine(oss, "textures", profile.textureCount);
+        AppendCountLine(oss, "emissive tris", profile.emissiveTriangleCount);
+        AppendCountLine(oss, "decals", profile.decalCount);
+        AppendCountLine(oss, "airDust vols", profile.airDustVolumeCount);
+
+        oss << "  current:\n";
+        AppendProfileLine(oss, "meta", profile.ensureMetaMs, profile.totalMs);
+        AppendProfileLine(oss, "accumState", profile.accumulationStateMs, profile.totalMs);
+        AppendProfileLine(oss, "resize", profile.framebufferResizeMs, profile.totalMs);
+        AppendProfileLine(oss, "instances", profile.instanceConvertMs, profile.totalMs);
+        AppendProfileLine(oss, "lights", profile.lightConvertMs, profile.totalMs);
+        AppendProfileLine(oss, "emissive", profile.emissiveBuildMs, profile.totalMs);
+        AppendProfileLine(oss, "postParams", profile.postParamsMs, profile.totalMs);
+        AppendProfileLine(oss, "hipCore", profile.hipCoreMs, profile.totalMs);
+        AppendProfileLine(oss, "total", profile.totalMs, profile.totalMs);
+
+        oss << "  hip core (current):\n";
+        AppendProfileLine(oss, "ensureOutput", profile.lowLevel.ensureOutputMs, profile.lowLevel.totalMs);
+        AppendProfileLine(oss, "upload", profile.lowLevel.uploadSceneMs, profile.lowLevel.totalMs);
+        AppendProfileLine(oss, "kernel", profile.lowLevel.kernelMs, profile.lowLevel.totalMs);
+        AppendProfileLine(oss, "readback", profile.lowLevel.readbackMs, profile.lowLevel.totalMs);
+        AppendProfileLine(oss, "accumulation", profile.lowLevel.accumulationMs, profile.lowLevel.totalMs);
+        AppendProfileLine(oss, "postProcess", profile.lowLevel.postProcessMs, profile.lowLevel.totalMs);
+        AppendProfileLine(oss, "coreTotal", profile.lowLevel.totalMs, profile.lowLevel.totalMs);
+
+        oss << "  average:\n";
+        AppendProfileLine(oss, "avgMeta", totals.ensureMetaMs * inv, totals.totalMs * inv);
+        AppendProfileLine(oss, "avgAccumState", totals.accumulationStateMs * inv, totals.totalMs * inv);
+        AppendProfileLine(oss, "avgInstances", totals.instanceConvertMs * inv, totals.totalMs * inv);
+        AppendProfileLine(oss, "avgLights", totals.lightConvertMs * inv, totals.totalMs * inv);
+        AppendProfileLine(oss, "avgEmissive", totals.emissiveBuildMs * inv, totals.totalMs * inv);
+        AppendProfileLine(oss, "avgHipCore", totals.hipCoreMs * inv, totals.totalMs * inv);
+        AppendProfileLine(oss, "avgTotal", totals.totalMs * inv, totals.totalMs * inv);
+
+        oss << "  hip core (average):\n";
+        AppendProfileLine(oss, "ensureOutput", totals.ensureOutputMs * inv, totals.lowLevelTotalMs * inv);
+        AppendProfileLine(oss, "upload", totals.uploadSceneMs * inv, totals.lowLevelTotalMs * inv);
+        AppendProfileLine(oss, "kernel", totals.kernelMs * inv, totals.lowLevelTotalMs * inv);
+        AppendProfileLine(oss, "readback", totals.readbackMs * inv, totals.lowLevelTotalMs * inv);
+        AppendProfileLine(oss, "accumulation", totals.accumulationMs * inv, totals.lowLevelTotalMs * inv);
+        AppendProfileLine(oss, "postProcess", totals.postProcessMs * inv, totals.lowLevelTotalMs * inv);
+        AppendProfileLine(oss, "coreTotal", totals.lowLevelTotalMs * inv, totals.lowLevelTotalMs * inv);
+        oss << std::endl;
+
+        AppendProfileText(oss.str());
+    }
 
     static_assert(sizeof(SceneInstanceGPU) == sizeof(HIPSceneInstanceGPU),
                   "HIPSceneInstanceGPU must match SceneInstanceGPU");
@@ -1041,6 +1251,8 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
     std::cerr << "RenderFrameHIPTexture: project was built without USE_HIP_RENDERER\n";
     return false;
 #else
+    const auto totalStart = ProfileClock::now();
+
     if (cameraCPU.width <= 0 || cameraCPU.height <= 0)
     {
         std::cerr << "RenderFrameHIPTexture: invalid frame size\n";
@@ -1053,12 +1265,33 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
         return false;
     }
 
+    HIPTextureFrameProfile profile{};
+    profile.callIndex = ++g_textureProfileCallIndexHost;
+    profile.accumulatedSamples = g_accumulatedSampleCountHost;
+    profile.samplesThisDispatch =
+        static_cast<std::uint32_t>(std::max(cameraCPU.samplesPerPixel, 1));
+    profile.accumulationMode = accumulationMode;
+    profile.prototypeTriangles = ToU32Count(tris.size());
+    profile.totalInstances = ToU32Count(instances.size());
+    profile.tlasNodeCount = ToU32Count(tlasNodes.size());
+    profile.blasNodeCount = ToU32Count(meshNodes.size());
+    profile.lightCount = ToU32Count(lights.size());
+
+    const auto metaStart = ProfileClock::now();
     if (!EnsureMetaResourcesCached(metaRes))
     {
+        profile.ensureMetaMs = ToMilliseconds(ProfileClock::now() - metaStart);
         std::cerr << "RenderFrameHIPTexture: failed to prepare meta resources\n";
         return false;
     }
+    profile.ensureMetaMs = ToMilliseconds(ProfileClock::now() - metaStart);
+    profile.materialCount = metaRes ? ToU32Count(metaRes->materials.size()) : 0u;
+    profile.materialPBRCount = metaRes ? ToU32Count(metaRes->materialsPBR.size()) : 0u;
+    profile.textureCount = ToU32Count(g_metaCache.textureDescs.size());
+    profile.decalCount = ToU32Count(g_metaCache.decals.size());
+    profile.airDustVolumeCount = ToU32Count(g_metaCache.airDustVolumes.size());
 
+    const auto accumStateStart = ProfileClock::now();
     const std::uint64_t accumulationHash =
         ComputeAccumulationStateHash(cameraCPU,
                                      cameraCPU.width,
@@ -1072,15 +1305,31 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
     {
         ResetHIPAccumulation();
         g_accumulationStateHashHost = accumulationHash;
+        profile.accumulatedSamples = 0u;
+        profile.callIndex = 1u;
+        g_textureProfileCallIndexHost = profile.callIndex;
     }
+    profile.accumulationStateMs = ToMilliseconds(ProfileClock::now() - accumStateStart);
 
+    const auto resizeStart = ProfileClock::now();
     framebuffer.resize(static_cast<std::size_t>(cameraCPU.width) * static_cast<std::size_t>(cameraCPU.height));
+    profile.framebufferResizeMs = ToMilliseconds(ProfileClock::now() - resizeStart);
 
+    const auto instanceStart = ProfileClock::now();
     const std::vector<HIPSceneInstanceGPU> gpuInstances = ConvertInstancesToGPU(instances);
+    profile.instanceConvertMs = ToMilliseconds(ProfileClock::now() - instanceStart);
+
+    const auto lightStart = ProfileClock::now();
     const std::vector<HIPLightGPU> gpuLights = ConvertLightsToGPU(lights);
+    profile.lightConvertMs = ToMilliseconds(ProfileClock::now() - lightStart);
+
+    const auto emissiveStart = ProfileClock::now();
     const std::vector<HIPEmissiveTriangleGPU> emissiveTriangles =
         BuildEmissiveTriangleTable(tris, instances, metaRes);
+    profile.emissiveBuildMs = ToMilliseconds(ProfileClock::now() - emissiveStart);
+    profile.emissiveTriangleCount = ToU32Count(emissiveTriangles.size());
 
+    const auto postParamsStart = ProfileClock::now();
     const HIPPostProcessParams postParams =
         BuildPostProcessParams(metaRes,
                                cameraCPU,
@@ -1088,7 +1337,9 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
                                cameraCPU.height,
                                g_previewDispatchCountHost,
                                accumulationMode);
+    profile.postParamsMs = ToMilliseconds(ProfileClock::now() - postParamsStart);
 
+    const auto hipCoreStart = ProfileClock::now();
     const bool ok = HIP_RenderFrameTexture_C(tlasNodes.data(),
                                              static_cast<std::uint32_t>(tlasNodes.size()),
                                              meshNodes.data(),
@@ -1120,6 +1371,8 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
                                              g_metaCache.generation,
                                              g_accumulatedSampleCountHost,
                                              framebuffer.data());
+    profile.hipCoreMs = ToMilliseconds(ProfileClock::now() - hipCoreStart);
+    (void)HIP_GetLastTextureExecutionProfile_C(&profile.lowLevel);
 
     if (!ok)
     {
@@ -1133,6 +1386,8 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
     else
         g_previewDispatchCountHost = 0u;
 
+    profile.totalMs = ToMilliseconds(ProfileClock::now() - totalStart);
+    PrintTextureFrameProfile(profile);
     return true;
 #endif
 }
@@ -1142,6 +1397,8 @@ void ResetHIPAccumulation()
     g_accumulationStateHashHost = kInvalidAccumulationHash;
     g_accumulatedSampleCountHost = 0u;
     g_previewDispatchCountHost = 0u;
+    g_textureProfileTotalsHost = {};
+    g_textureProfileCallIndexHost = 0u;
 #ifdef USE_HIP_RENDERER
     HIP_ResetAccumulation_C();
 #endif
