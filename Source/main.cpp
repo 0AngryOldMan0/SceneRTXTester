@@ -21,6 +21,9 @@
 #include "../Headers/Classes/RenderManager.h"
 #include "../Headers/SceneMetaLoader.h"
 
+#ifdef USE_HIP_RENDERER
+#include "../Headers/Classes/HIPRenderer.h"
+#endif
 #ifdef USE_METAL_RENDERER
 #include "../Headers/Classes/MetalRenderer.h"
 #endif
@@ -328,19 +331,36 @@ int main(int argc, char **argv)
         }
 
         const auto tPreload0 = tMeta1;
-        bool didMetalPreload = false;
+        bool didRendererPreload = false;
         for (auto &renderer : renderManager.getRenderers())
         {
+    #ifdef USE_HIP_RENDERER
+            if (auto *hip = dynamic_cast<HIPRenderer *>(renderer.get()))
+            {
+                hip->setMetaResources(&metaRes);
+                didRendererPreload = true;
+            }
+    #endif
     #ifdef USE_METAL_RENDERER
             if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
             {
                 metal->setMetaResources(&metaRes);
-                didMetalPreload = true;
+                didRendererPreload = true;
             }
     #endif
             renderer->setSamplesPerPixel(samplesPerPixel);
             renderer->setImageSize(imageWidth, imageHeight);
 
+    #ifdef USE_HIP_RENDERER
+            if (auto *hip = dynamic_cast<HIPRenderer *>(renderer.get()))
+            {
+                if (!hip->preloadSceneResources())
+                {
+                    std::cerr << "HIP resource preload failed\n";
+                    return 1;
+                }
+            }
+    #endif
     #ifdef USE_METAL_RENDERER
             if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
             {
@@ -450,8 +470,8 @@ int main(int argc, char **argv)
         std::cout << "Global BVH Depth:      " << stats.globalBVHDepth << "\n";
         std::cout << "Load time (scene):   " << msLoad   << " ms\n";
         std::cout << "Meta load time:      " << std::chrono::duration<double, std::milli>(tMeta1 - tLoad1).count() << " ms\n";
-        if (didMetalPreload)
-            std::cout << "Metal preload time:  " << msPreload << " ms\n";
+        if (didRendererPreload)
+            std::cout << "Renderer preload time: " << msPreload << " ms\n";
         std::cout << "BVH build time:      " << msBVH    << " ms\n";
         std::cout << "Render time:         " << msRender << " ms\n";
         std::cout << "Total time:          " << msTotal  << " ms\n";

@@ -3,12 +3,13 @@
 #include "Renderer.h"
 #include "HIPRendererFunctions.h"
 
-// Рендерер на базе HIP (AMD GPU / ROCm)
+struct SceneMetaResources;
+
 class HIPRenderer : public Renderer
 {
 public:
     HIPRenderer();
-    ~HIPRenderer();
+    ~HIPRenderer() override;
 
     bool initialize() override;
     void cleanup() override;
@@ -19,7 +20,11 @@ public:
 
     std::string getName() const override { return "HIP GPU Ray Tracer"; }
 
-    // Прогрессивный рендер с накоплением (аналог MetalRenderer::renderTexture)
+    void setMetaResources(const SceneMetaResources *metaRes);
+    void setAccumulationMode(HIPAccumulationMode mode);
+    HIPAccumulationMode getAccumulationMode() const { return accumulationMode_; }
+
+    bool preloadSceneResources();
     bool renderTexture(const Scene &scene,
                        const Camera &camera,
                        std::vector<Vec3> &framebuffer);
@@ -27,5 +32,8 @@ public:
     void resetAccumulation() override;
 
 private:
-    CameraDataCPU prepareCameraData(const Camera &camera, const Vec3 &lightPos) const;
+    const SceneMetaResources *m_metaRes = nullptr;
+    HIPAccumulationMode accumulationMode_ = HIPAccumulationMode::PreviewProgressive;
+
+    CameraDataCPU prepareCameraData(const Camera &camera) const;
 };

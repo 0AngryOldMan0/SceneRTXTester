@@ -1,206 +1,93 @@
 #include "HIPRenderer.h"
 #include "CameraData.h"
-#include <iostream>
-#include <iomanip>
-#include <fstream>
+
 #include <chrono>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 
-// Простейший дамп статистики в .txt
-static void SaveMonitoringValuesToFileHIP(const std::vector<MonitoringFrameStats> &frames,
-                                          const std::string &outputBase = "Results/Info/FrameStats")
+namespace
 {
-    if (frames.empty())
-        return;
-
-    std::string filename = outputBase + "_HIP_GPU.txt";
-    std::ofstream out(filename);
-    if (!out)
+    void SaveMonitoringValuesToFileHIP(const std::vector<MonitoringFrameStats> &frames,
+                                       const std::string &outputBase = "Results/Info/FrameStats")
     {
-        std::cerr << "HIPRenderer: не удалось открыть файл для записи мониторинга: "
-                  << filename << "\n";
-        return;
-    }
+        if (frames.empty())
+            return;
 
-    out << std::fixed << std::setprecision(6);
-    out << "FrameIndex;RaysTraced;RaysHit;VisitedNodes;FrameTimeMs;"
-           "TotalTimeMs;RaysPerSecond\n";
+        const std::string filename = outputBase + "_HIP_GPU.txt";
+        std::ofstream out(filename);
+        if (!out)
+        {
+            std::cerr << "HIPRenderer: failed to open stats output file: " << filename << "\n";
+            return;
+        }
 
-    for (const auto &f : frames)
-    {
-        out << f.frameIndex << ';'
-            << f.raysTraced << ';'
-            << f.raysHit << ';'
-            << f.totalVisitedNodes << ';'
-            << f.frameRenderTimeMs << ';'
-            << f.frameTotalTimeMs << ';'
-            << f.raysPerSecond << '\n';
+        out << std::fixed << std::setprecision(6);
+        out << "FrameIndex;RaysTraced;RaysHit;VisitedNodes;FrameTimeMs;TotalTimeMs;RaysPerSecond\n";
+
+        for (const MonitoringFrameStats &f : frames)
+        {
+            out << f.frameIndex << ';'
+                << f.raysTraced << ';'
+                << f.raysHit << ';'
+                << f.totalVisitedNodes << ';'
+                << f.frameRenderTimeMs << ';'
+                << f.frameTotalTimeMs << ';'
+                << f.raysPerSecond << '\n';
+        }
     }
 }
 
-// ----------------------------------------------------------
-// Конструктор / деструктор
-// ----------------------------------------------------------
-
-HIPRenderer::HIPRenderer()
-{
-}
+HIPRenderer::HIPRenderer() = default;
 
 HIPRenderer::~HIPRenderer()
 {
     cleanup();
 }
 
-// ----------------------------------------------------------
-// Инициализация / очистка
-// ----------------------------------------------------------
+void HIPRenderer::setMetaResources(const SceneMetaResources *metaRes)
+{
+    if (m_metaRes == metaRes)
+        return;
+
+    m_metaRes = metaRes;
+    resetAccumulation();
+}
+
+void HIPRenderer::setAccumulationMode(HIPAccumulationMode mode)
+{
+    if (accumulationMode_ == mode)
+        return;
+
+    accumulationMode_ = mode;
+    resetAccumulation();
+}
 
 bool HIPRenderer::initialize()
 {
-    // Пока просто прокидываем в низкоуровневую инициализацию HIP
     return InitHIPRenderer();
+}
+
+bool HIPRenderer::preloadSceneResources()
+{
+    return PreloadHIPSceneResources(m_metaRes);
 }
 
 void HIPRenderer::cleanup()
 {
-    // Если потом появится явная очистка ресурсов HIP – добавим сюда
+    SaveMonitoringValuesToFileHIP(stats_);
 }
-
-// ----------------------------------------------------------
-// Обычный рендер одного кадра (без накопления)
-// ----------------------------------------------------------
 
 bool HIPRenderer::render(const Scene &scene,
                          const Camera &camera,
                          std::vector<Vec3> &framebuffer)
 {
-    using Clock = std::chrono::high_resolution_clock;
-
-    if (!scene.hasGlobalBVH())
-    {
-        std::cerr << "HIPRenderer: ошибка – глобальный BVH не построен\n";
-        return false;
-    }
-
-    MonitoringFrameStats frameStats;
-    frameStats.frameIndex = static_cast<int>(stats_.size());
-
-    auto frameStart = Clock::now();
-
-    // Данные камеры
-    CameraDataCPU camData = prepareCameraData(camera, scene.getMainLight().position);
-
-    bool success = RenderFrameHIP(scene.getGlobalNodes(),
-                                  scene.getGlobalTriangles(),
-                                  scene.getLights(),
-                                  scene.getGlobalRootIndex(),
-                                  camData,
-                                  framebuffer);
-
-    auto frameEnd = Clock::now();
-
-    if (success)
-    {
-        // Простейшая оценка количества лучей
-        frameStats.raysTraced =
-            static_cast<std::uint64_t>(imageWidth_) *
-            static_cast<std::uint64_t>(imageHeight_) *
-            static_cast<std::uint64_t>(samplesPerPixel_);
-
-        frameStats.frameRenderTimeMs =
-            std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
-
-        frameStats.frameTotalTimeMs = frameStats.frameRenderTimeMs;
-
-        if (frameStats.frameRenderTimeMs > 0.0)
-        {
-            frameStats.raysPerSecond =
-                static_cast<double>(frameStats.raysTraced) /
-                (frameStats.frameRenderTimeMs / 1000.0);
-        }
-
-        stats_.push_back(frameStats);
-    }
-
-    SaveMonitoringValuesToFileHIP(stats_);
-    return success;
+    return renderTexture(scene, camera, framebuffer);
 }
 
-// ----------------------------------------------------------
-// Прогрессивный рендер с накоплением (аналог MetalRenderer::renderTexture)
-// ----------------------------------------------------------
-
-bool HIPRenderer::renderTexture(const Scene &scene,
-                                const Camera &camera,
-                                std::vector<Vec3> &framebuffer)
+CameraDataCPU HIPRenderer::prepareCameraData(const Camera &camera) const
 {
-    using Clock = std::chrono::high_resolution_clock;
-
-    if (!scene.hasGlobalBVH())
-    {
-        std::cerr << "HIPRenderer: ошибка – глобальный BVH не построен\n";
-        return false;
-    }
-
-    MonitoringFrameStats frameStats;
-    frameStats.frameIndex = static_cast<int>(stats_.size());
-
-    auto frameStart = Clock::now();
-
-    CameraDataCPU camData = prepareCameraData(camera, scene.getMainLight().position);
-
-    bool success = RenderFrameHIPAccumulate(scene.getGlobalNodes(),
-                                            scene.getGlobalTriangles(),
-                                            scene.getLights(),
-                                            scene.getGlobalRootIndex(),
-                                            camData,
-                                            framebuffer);
-
-    auto frameEnd = Clock::now();
-
-    if (success)
-    {
-        frameStats.raysTraced =
-            static_cast<std::uint64_t>(imageWidth_) *
-            static_cast<std::uint64_t>(imageHeight_) *
-            static_cast<std::uint64_t>(samplesPerPixel_);
-
-        frameStats.frameRenderTimeMs =
-            std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
-        frameStats.frameTotalTimeMs = frameStats.frameRenderTimeMs;
-
-        if (frameStats.frameRenderTimeMs > 0.0)
-        {
-            frameStats.raysPerSecond =
-                static_cast<double>(frameStats.raysTraced) /
-                (frameStats.frameRenderTimeMs / 1000.0);
-        }
-
-        stats_.push_back(frameStats);
-    }
-
-    SaveMonitoringValuesToFileHIP(stats_);
-    return success;
-}
-
-// ----------------------------------------------------------
-// Сброс накопления
-// ----------------------------------------------------------
-
-void HIPRenderer::resetAccumulation()
-{
-    ResetHIPAccumulation();
-}
-
-// ----------------------------------------------------------
-// Подготовка данных камеры (такая же, как у MetalRenderer)
-// ----------------------------------------------------------
-
-CameraDataCPU HIPRenderer::prepareCameraData(const Camera &camera,
-                                             const Vec3 &lightPos) const
-{
-    (void)lightPos;
-
-    CameraDataCPU camData;
+    CameraDataCPU camData{};
     camData.position = camera.getPosition();
     camData.forward = camera.getForward();
     camData.up = camera.getUp();
@@ -213,6 +100,67 @@ CameraDataCPU HIPRenderer::prepareCameraData(const Camera &camera,
     camData.farPlane = camera.getFarPlane();
     camData.focusDistance = camera.getFocusDistance();
     camData.aspectRatio = camera.getAspectRatio();
-
     return camData;
+}
+
+void HIPRenderer::resetAccumulation()
+{
+    ResetHIPAccumulation();
+}
+
+bool HIPRenderer::renderTexture(const Scene &scene,
+                                const Camera &camera,
+                                std::vector<Vec3> &framebuffer)
+{
+    using Clock = std::chrono::high_resolution_clock;
+
+    if (!scene.hasGlobalBVH())
+    {
+        std::cerr << "HIPRenderer: global BVH is not built\n";
+        return false;
+    }
+
+    framebuffer.resize(static_cast<std::size_t>(imageWidth_) * static_cast<std::size_t>(imageHeight_));
+
+    MonitoringFrameStats frameStats{};
+    frameStats.frameIndex = static_cast<int>(stats_.size());
+
+    const auto frameStart = Clock::now();
+    const CameraDataCPU camData = prepareCameraData(camera);
+
+    const bool success = RenderFrameHIPTexture(scene.getGlobalNodes(),
+                                               scene.getGlobalMeshNodes(),
+                                               scene.getGlobalTriangles(),
+                                               scene.getGlobalInstances(),
+                                               scene.getLights(),
+                                               scene.getSceneRevision(),
+                                               accumulationMode_,
+                                               scene.getGlobalRootIndex(),
+                                               camData,
+                                               m_metaRes,
+                                               framebuffer);
+
+    const auto frameEnd = Clock::now();
+
+    if (success)
+    {
+        frameStats.raysTraced =
+            static_cast<std::uint64_t>(imageWidth_) *
+            static_cast<std::uint64_t>(imageHeight_) *
+            static_cast<std::uint64_t>(samplesPerPixel_);
+
+        frameStats.frameRenderTimeMs =
+            std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+        frameStats.frameTotalTimeMs = frameStats.frameRenderTimeMs;
+
+        if (frameStats.frameRenderTimeMs > 0.0)
+        {
+            frameStats.raysPerSecond =
+                static_cast<double>(frameStats.raysTraced) / (frameStats.frameRenderTimeMs / 1000.0);
+        }
+
+        stats_.push_back(frameStats);
+    }
+
+    return success;
 }

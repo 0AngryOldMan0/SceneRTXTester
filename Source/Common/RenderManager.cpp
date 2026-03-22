@@ -70,8 +70,8 @@ namespace
             throw std::runtime_error("Не удалось записать PNG-файл: " + filename);
     }
 
-    std::vector<int> BuildMetalSppSchedule(TextureRenderMode mode,
-                                           int baseSamplesPerPixel)
+    std::vector<int> BuildTextureSppSchedule(TextureRenderMode mode,
+                                             int baseSamplesPerPixel)
     {
         constexpr int kPreviewSpp = 2;
         constexpr int kMaxStableDispatchSpp = 4;
@@ -237,7 +237,7 @@ bool RenderManager::renderFrameTexture(Scene &scene,
 #ifdef USE_METAL_RENDERER
     if (auto *metal = dynamic_cast<MetalRenderer *>(renderer))
     {
-        const std::vector<int> sppSchedule = BuildMetalSppSchedule(mode, baseSamplesPerPixel);
+        const std::vector<int> sppSchedule = BuildTextureSppSchedule(mode, baseSamplesPerPixel);
         const MetalAccumulationMode previousMode = metal->getAccumulationMode();
         metal->setAccumulationMode(mode == TextureRenderMode::Preview
                                        ? MetalAccumulationMode::PreviewProgressive
@@ -267,15 +267,27 @@ bool RenderManager::renderFrameTexture(Scene &scene,
     {
         if (auto *hip = dynamic_cast<HIPRenderer *>(renderer))
         {
-            if (!hip->renderTexture(scene, camera, framebuffer))
+            const std::vector<int> sppSchedule = BuildTextureSppSchedule(mode, baseSamplesPerPixel);
+            const HIPAccumulationMode previousMode = hip->getAccumulationMode();
+            hip->setAccumulationMode(mode == TextureRenderMode::Preview
+                                         ? HIPAccumulationMode::PreviewProgressive
+                                         : HIPAccumulationMode::FinalStill);
+
+            for (std::size_t i = 0; i < sppSchedule.size(); ++i)
             {
-                success = false;
-            }
-            else
-            {
-                const std::string outPath = outputPath + "_0.png";
+                renderer->setSamplesPerPixel(sppSchedule[i]);
+                if (!hip->renderTexture(scene, camera, framebuffer))
+                {
+                    success = false;
+                    break;
+                }
+
+                const std::string outPath = outputPath + "_" + std::to_string(i) + ".png";
                 SaveFrameBufferToPNG(framebuffer, w, h, outPath);
             }
+
+            renderer->setSamplesPerPixel(baseSamplesPerPixel);
+            hip->setAccumulationMode(previousMode);
             handled = true;
         }
     }
