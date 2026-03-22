@@ -5,9 +5,9 @@
 #include <cstddef>
 #include <cstdio>
 
-#define PI               HIP_M_PI
-#define INV_PI           (1.0f / HIP_M_PI)
-#define INV_4PI          (1.0f / (4.0f * HIP_M_PI))
+#define PI               3.14159265358979323846f
+#define INV_PI           0.31830988618379067154f
+#define INV_4PI          0.07957747154594766788f
 #define AMBIENT_STRENGTH 0.11f
 #define SHADOW_EPS       1e-3f
 #define IMAGE_EXPOSURE   0.75f
@@ -20,6 +20,12 @@
 #define DENOISE_SIGMA_SPACE  1.0f
 #define DENOISE_SIGMA_COLOR  0.20f
 #define DENOISE_BLEND_FACTOR 0.40f
+#define BLOCK_SIZE           8
+
+static inline __host__ __device__ float3 make_float3(float v)
+{
+    return ::make_float3(v, v, v);
+}
 
 // ======================
 // Структуры (аналогичные Metal)
@@ -68,8 +74,10 @@ struct CameraData
     int   height;
     int   samplesPerPixel;
 
-    float3 lightPos;
-    int   _pad;
+    float nearPlane;
+    float farPlane;
+    float focusDistance;
+    float aspectRatio;
 };
 
 struct Ray

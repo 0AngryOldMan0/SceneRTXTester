@@ -68,8 +68,10 @@ struct CameraData
     int   height;
     int   samplesPerPixel;
 
-    float3 lightPos;
-    int   _pad;
+    float nearPlane;
+    float farPlane;
+    float focusDistance;
+    float aspectRatio;
 };
 
 struct Ray

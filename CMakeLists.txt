@@ -13,6 +13,10 @@ option(USE_CUDA_RENDERER  "Enable CUDA renderer for NVIDIA GPUs" OFF)
 option(USE_HIP_RENDERER   "Enable HIP renderer for AMD GPUs" OFF)
 option(USE_METAL_RENDERER "Enable Metal renderer for APPLE GPU" ON)
 
+if(USE_HIP_RENDERER AND USE_CUDA_RENDERER)
+    message(WARNING "Building with both HIP and CUDA enabled is not validated. Prefer one Windows GPU backend per build preset.")
+endif()
+
 # -----------------------
 # Языки по платформам
 # -----------------------
@@ -22,17 +26,29 @@ endif()
 
 if(WIN32 AND USE_HIP_RENDERER)
     # Включаем язык HIP только на Windows, когда он реально нужен.
-    enable_language(HIP)
 
     # RX 6900 XT (Navi 21 / RDNA2) -> архитектура gfx1030.
     # Если хочешь другую, переопредели CMAKE_HIP_ARCHITECTURES
     # через -D CMAKE_HIP_ARCHITECTURES=gfxXXXX при конфигурации.
     if(NOT CMAKE_HIP_ARCHITECTURES)
-        set(CMAKE_HIP_ARCHITECTURES "gfx1030")
+        set(CMAKE_HIP_ARCHITECTURES "gfx1030" CACHE STRING "AMD GPU architectures for HIP compilation")
     endif()
 endif()
 
 if(WIN32 AND USE_CUDA_RENDERER)
+    if(NOT CMAKE_CUDA_COMPILER)
+        find_program(SCENERTX_NVCC
+            NAMES nvcc nvcc.exe
+            HINTS "$ENV{CUDA_PATH}/bin"
+        )
+
+        if(NOT SCENERTX_NVCC)
+            message(FATAL_ERROR "CUDA toolkit was not found. Install CUDA and make nvcc available via PATH or set CMAKE_CUDA_COMPILER.")
+        endif()
+
+        set(CMAKE_CUDA_COMPILER "${SCENERTX_NVCC}" CACHE FILEPATH "CUDA compiler" FORCE)
+    endif()
+
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
 endif()
@@ -94,14 +110,9 @@ endif()
 # -----------------------
 if(WIN32 AND USE_HIP_RENDERER)
     set(SRC_HIP
-        Shader/windows/AMD/RayTraceHIP.hip.cpp
         Source/windowsSpecific/AMD/HIPRenderer.cpp
         Source/windowsSpecific/AMD/HIPRendererFunctions.cpp
-        Headers/HIPRendererFunctions.h
-    )
-
-    set_source_files_properties(Shader/windows/AMD/RayTraceHIP.hip.cpp
-        PROPERTIES LANGUAGE HIP
+        Headers/ShaderSpecific/HIPRendererFunctions.h
     )
 endif()
 
@@ -181,8 +192,74 @@ if(WIN32 AND USE_HIP_RENDERER)
     # На Windows он обычно ищется через HIP_PATH, проброшенный в CMAKE_PREFIX_PATH:
     #   cmake -D CMAKE_PREFIX_PATH=%HIP_PATH% ...
     find_package(hip REQUIRED CONFIG)
+    if(NOT HIP_PATH)
+        set(HIP_PATH "$ENV{HIP_PATH}")
+    endif()
+    if(NOT HIP_PATH)
+        message(FATAL_ERROR "HIP_PATH is not set. Open VSCode from the Visual Studio developer environment or define HIP_PATH explicitly.")
+    endif()
 
-    target_link_libraries(SceneRTXTester PRIVATE hip::device)
+    file(TO_CMAKE_PATH "${HIP_PATH}" HIP_PATH)
+    set(SCENERTX_HIPCC "${HIP_PATH}/bin/hipcc.bat")
+    if(NOT EXISTS "${SCENERTX_HIPCC}")
+        message(FATAL_ERROR "hipcc was not found at ${SCENERTX_HIPCC}")
+    endif()
+
+    set(SCENERTX_HIP_KERNEL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/Shader/windows/AMD/RayTraceHIP.hip.cpp")
+    set(SCENERTX_HIP_KERNEL_OBJ "${CMAKE_CURRENT_BINARY_DIR}/hip/RayTraceHIP.obj")
+    set(SCENERTX_HIP_OFFLOAD_ARGS)
+    set(SCENERTX_HIP_HOST_ARGS)
+    foreach(arch IN LISTS CMAKE_HIP_ARCHITECTURES)
+        list(APPEND SCENERTX_HIP_OFFLOAD_ARGS "--offload-arch=${arch}")
+    endforeach()
+
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        list(APPEND SCENERTX_HIP_HOST_ARGS
+            -D_DEBUG
+            -D_DLL
+            -D_MT
+            -D_ITERATOR_DEBUG_LEVEL=2
+            -g
+            -Xclang
+            -gcodeview
+            -Xclang
+            --dependent-lib=msvcrtd
+        )
+    else()
+        list(APPEND SCENERTX_HIP_HOST_ARGS
+            -DNDEBUG
+            -D_DLL
+            -D_MT
+            -D_ITERATOR_DEBUG_LEVEL=0
+            -O2
+            -Xclang
+            --dependent-lib=msvcrt
+        )
+    endif()
+
+    add_custom_command(
+        OUTPUT "${SCENERTX_HIP_KERNEL_OBJ}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/hip"
+        COMMAND "${SCENERTX_HIPCC}"
+            -std=c++17
+            -c "${SCENERTX_HIP_KERNEL_SRC}"
+            -o "${SCENERTX_HIP_KERNEL_OBJ}"
+            -I"${CMAKE_CURRENT_SOURCE_DIR}/Headers"
+            -I"${CMAKE_CURRENT_SOURCE_DIR}/Headers/Classes"
+            -I"${CMAKE_CURRENT_SOURCE_DIR}/Headers/Structures"
+            -I"${CMAKE_CURRENT_SOURCE_DIR}/Headers/ShaderSpecific"
+            -I"${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs"
+            ${SCENERTX_HIP_HOST_ARGS}
+            ${SCENERTX_HIP_OFFLOAD_ARGS}
+        DEPENDS "${SCENERTX_HIP_KERNEL_SRC}"
+        COMMENT "Compiling HIP kernel with hipcc"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+
+    target_sources(SceneRTXTester PRIVATE "${SCENERTX_HIP_KERNEL_OBJ}")
+    set_source_files_properties("${SCENERTX_HIP_KERNEL_OBJ}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    target_link_libraries(SceneRTXTester PRIVATE hip::host)
     target_compile_definitions(SceneRTXTester PRIVATE USE_HIP_RENDERER=1)
 endif()
 

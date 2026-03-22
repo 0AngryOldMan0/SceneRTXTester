@@ -198,6 +198,8 @@ void HIPRenderer::resetAccumulation()
 CameraDataCPU HIPRenderer::prepareCameraData(const Camera &camera,
                                              const Vec3 &lightPos) const
 {
+    (void)lightPos;
+
     CameraDataCPU camData;
     camData.position = camera.getPosition();
     camData.forward = camera.getForward();
@@ -207,8 +209,10 @@ CameraDataCPU HIPRenderer::prepareCameraData(const Camera &camera,
     camData.width = imageWidth_;
     camData.height = imageHeight_;
     camData.samplesPerPixel = samplesPerPixel_;
-    camData.lightPos = lightPos;
-    camData.pad = 0;
+    camData.nearPlane = camera.getNearPlane();
+    camData.farPlane = camera.getFarPlane();
+    camData.focusDistance = camera.getFocusDistance();
+    camData.aspectRatio = camera.getAspectRatio();
 
     return camData;
 }

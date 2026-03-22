@@ -142,17 +142,13 @@ namespace
         }
     }
 
-    static std::string DetectRendererName()
+    static std::string DetectRendererName(const RenderManager &renderManager)
     {
-    #if defined(USE_HIP_RENDERER)
-        return "HIP GPU Ray Tracer";
-    #elif defined(USE_METAL_RENDERER)
-        return "Metal GPU Ray Tracer";
-    #elif defined(USE_CUDA_RENDERER)
-        return "CUDA GPU Ray Tracer";
-    #else
-    #error "Не включён ни один рендерер: USE_HIP_RENDERER / USE_METAL_RENDERER / USE_CUDA_RENDERER"
-    #endif
+        const auto &renderers = renderManager.getRenderers();
+        if (renderers.empty() || !renderers.front())
+            return {};
+
+        return renderers.front()->getName();
     }
 
     struct RenderDimensions
@@ -323,6 +319,14 @@ int main(int argc, char **argv)
         const auto tMeta1 = Clock::now();
         RenderManager renderManager;
 
+        if (renderManager.getRenderers().empty())
+        {
+            std::cerr
+                << "No renderer backend is enabled for this build.\n"
+                << "Enable one of USE_HIP_RENDERER, USE_CUDA_RENDERER, or USE_METAL_RENDERER in CMake.\n";
+            return 1;
+        }
+
         const auto tPreload0 = tMeta1;
         bool didMetalPreload = false;
         for (auto &renderer : renderManager.getRenderers())
@@ -359,7 +363,7 @@ int main(int argc, char **argv)
         scene.buildGlobalBVH(bvhStrategy);
         const auto tBVH1 = Clock::now();
 
-        const std::string rendererName = DetectRendererName();
+        const std::string rendererName = DetectRendererName(renderManager);
 
         fs::path outDir = fs::path("Results") / "GPUFrames";
         std::error_code ec;
