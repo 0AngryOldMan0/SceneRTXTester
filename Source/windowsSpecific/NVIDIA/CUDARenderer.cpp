@@ -2,24 +2,37 @@
 #include "CameraData.h"
 #include "CudaRendererFunctions.h"
 
+#include <filesystem>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <chrono>
 
-// Простейший дампер статистики в .txt (отдельный файл для CUDA)
 static void SaveMonitoringValuesToFileCuda(const std::vector<MonitoringFrameStats> &frames,
                                            const std::string &outputBase = "Results/Info/FrameStats")
 {
     if (frames.empty())
         return;
 
-    std::string filename = outputBase + "_CUDA_GPU.txt";
+    const std::filesystem::path filename = std::filesystem::path(outputBase + "_CUDA_GPU.txt");
+    const std::filesystem::path parentDir = filename.parent_path();
+    if (!parentDir.empty())
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(parentDir, ec);
+        if (ec)
+        {
+            std::cerr << "CudaRenderer: failed to create stats output directory: "
+                      << parentDir.string() << " (" << ec.message() << ")\n";
+            return;
+        }
+    }
+
     std::ofstream out(filename);
     if (!out)
     {
-        std::cerr << "CudaRenderer: не удалось открыть файл для записи мониторинга: "
-                  << filename << "\n";
+        std::cerr << "CudaRenderer: failed to open monitoring output file: "
+                  << filename.string() << "\n";
         return;
     }
 
@@ -36,10 +49,6 @@ static void SaveMonitoringValuesToFileCuda(const std::vector<MonitoringFrameStat
     }
 }
 
-// ----------------------------------------------------------
-// Конструктор / деструктор
-// ----------------------------------------------------------
-
 CudaRenderer::CudaRenderer()
 {
 }
@@ -49,25 +58,14 @@ CudaRenderer::~CudaRenderer()
     cleanup();
 }
 
-// ----------------------------------------------------------
-// Инициализация / очистка
-// ----------------------------------------------------------
-
 bool CudaRenderer::initialize()
 {
-    // Хук на будущее: выбор девайса и т.п. Сейчас достаточно того,
-    // что делает InitCudaRenderer / CUDA runtime.
     return InitCudaRenderer();
 }
 
 void CudaRenderer::cleanup()
 {
-    // Пока явных ресурсов на стороне CUDA здесь нет
 }
-
-// ----------------------------------------------------------
-// Обычный рендер одного кадра (без накопления)
-// ----------------------------------------------------------
 
 bool CudaRenderer::render(const Scene &scene,
                           const Camera &camera,
@@ -77,7 +75,7 @@ bool CudaRenderer::render(const Scene &scene,
 
     if (!scene.hasGlobalBVH())
     {
-        std::cerr << "CudaRenderer: ошибка – глобальный BVH не построен\n";
+        std::cerr << "CudaRenderer: global BVH is not built\n";
         return false;
     }
 
@@ -86,7 +84,6 @@ bool CudaRenderer::render(const Scene &scene,
 
     auto frameStart = Clock::now();
 
-    // Подготовка данных камеры
     CameraDataCPU camData = prepareCameraData(camera, scene.getMainLight().position);
 
     bool success = RenderFrameCuda(scene.getGlobalNodes(),
@@ -100,7 +97,6 @@ bool CudaRenderer::render(const Scene &scene,
 
     if (success)
     {
-        // Примерная оценка количества лучей
         frameStats.raysTraced =
             static_cast<std::uint64_t>(imageWidth_) *
             static_cast<std::uint64_t>(imageHeight_) *
@@ -124,10 +120,6 @@ bool CudaRenderer::render(const Scene &scene,
     return success;
 }
 
-// ----------------------------------------------------------
-// Прогрессивный рендер с накоплением (многократные вызовы)
-// ----------------------------------------------------------
-
 bool CudaRenderer::renderTexture(const Scene &scene,
                                  const Camera &camera,
                                  std::vector<Vec3> &framebuffer)
@@ -136,7 +128,7 @@ bool CudaRenderer::renderTexture(const Scene &scene,
 
     if (!scene.hasGlobalBVH())
     {
-        std::cerr << "CudaRenderer::renderTexture: глобальный BVH не построен\n";
+        std::cerr << "CudaRenderer::renderTexture: global BVH is not built\n";
         return false;
     }
 
@@ -181,18 +173,10 @@ bool CudaRenderer::renderTexture(const Scene &scene,
     return success;
 }
 
-// ----------------------------------------------------------
-// Сброс накопительного состояния
-// ----------------------------------------------------------
-
 void CudaRenderer::resetAccumulation()
 {
     ResetCudaAccumulation();
 }
-
-// ----------------------------------------------------------
-// Подготовка структуры CameraDataCPU (как в Metal/HIP)
-// ----------------------------------------------------------
 
 CameraDataCPU CudaRenderer::prepareCameraData(const Camera &camera,
                                               const Vec3 &lightPos) const

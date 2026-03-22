@@ -1,10 +1,11 @@
 #include "MetalRenderer.h"
 #include "CameraData.h"
-#include <iostream>
-#include <iomanip>
-#include <fstream>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <stdexcept>
 
 namespace
@@ -16,9 +17,20 @@ namespace
             return;
 
         const std::string filename = outputBase + "_GPU.txt";
+        const std::filesystem::path filenamePath = std::filesystem::path(filename);
+        const std::filesystem::path parentDir = filenamePath.parent_path();
+        if (!parentDir.empty())
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(parentDir, ec);
+            if (ec)
+                throw std::runtime_error("Failed to create monitoring output directory: " +
+                                         parentDir.string() + " (" + ec.message() + ")");
+        }
+
         std::ofstream out(filename);
         if (!out)
-            throw std::runtime_error("Не удалось открыть файл для записи мониторинга: " + filename);
+            throw std::runtime_error("Failed to open monitoring output file: " + filename);
 
         out << std::fixed << std::setprecision(6);
 
@@ -117,7 +129,6 @@ bool MetalRenderer::preloadSceneResources()
 
 void MetalRenderer::cleanup()
 {
-    // Dump stats once per session (especially important for progressive texture rendering)
     try
     {
         SaveMonitoringValuesToFile(stats_);
@@ -166,7 +177,7 @@ bool MetalRenderer::renderTexture(const Scene &scene,
 
     if (!scene.hasGlobalBVH())
     {
-        std::cerr << "Ошибка: глобальный BVH не построен\n";
+        std::cerr << "MetalRenderer: global BVH is not built\n";
         return false;
     }
 

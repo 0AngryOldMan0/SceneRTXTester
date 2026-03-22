@@ -1,10 +1,6 @@
 #include "CudaRendererFunctions.h"
 #include <iostream>
 
-// ----------------------------------------------------------
-// Вспомогательная функция: Light -> CudaLightGPUHost
-// ----------------------------------------------------------
-
 static void ConvertLightsToCudaGPU(const std::vector<Light> &srcLights,
                                    std::vector<CudaLightGPUHost> &dstLights)
 {
@@ -30,18 +26,12 @@ static void ConvertLightsToCudaGPU(const std::vector<Light> &srcLights,
     }
 }
 
-// ----------------------------------------------------------
-// High-level API
-// ----------------------------------------------------------
-
 bool InitCudaRenderer()
 {
 #ifdef USE_CUDA_RENDERER
-    // Пока ничего особенного не делаем – CUDA поднимет контекст сама.
-    // Здесь можно будет добавить cudaGetDeviceCount/cudaSetDevice и т.п.
     return true;
 #else
-    std::cerr << "InitCudaRenderer: проект собран без USE_CUDA_RENDERER\n";
+    std::cerr << "InitCudaRenderer: the project was built without USE_CUDA_RENDERER\n";
     return false;
 #endif
 }
@@ -60,7 +50,7 @@ bool RenderFrameCuda(const std::vector<BVHNode> &nodes,
     (void)rootIndex;
     (void)cameraCPU;
     (void)framebuffer;
-    std::cerr << "RenderFrameCuda: проект собран без USE_CUDA_RENDERER\n";
+    std::cerr << "RenderFrameCuda: the project was built without USE_CUDA_RENDERER\n";
     return false;
 #else
     const int width = cameraCPU.width;
@@ -68,22 +58,19 @@ bool RenderFrameCuda(const std::vector<BVHNode> &nodes,
 
     if (width <= 0 || height <= 0)
     {
-        std::cerr << "RenderFrameCuda: некорректный размер кадра ("
-                  << width << "x" << height << ")\n";
+        std::cerr << "RenderFrameCuda: invalid frame size (" << width << "x" << height << ")\n";
         return false;
     }
 
     if (nodes.empty() || tris.empty())
     {
-        std::cerr << "RenderFrameCuda: пустые BVH или треугольники\n";
+        std::cerr << "RenderFrameCuda: BVH or triangle data is empty\n";
         return false;
     }
 
-    // Подготавливаем буфер кадра под Vec3
     framebuffer.resize(static_cast<std::size_t>(width) *
                        static_cast<std::size_t>(height));
 
-    // Конвертируем источники света в компактный формат для GPU
     std::vector<CudaLightGPUHost> gpuLights;
     ConvertLightsToCudaGPU(lights, gpuLights);
 
@@ -105,9 +92,7 @@ bool RenderFrameCuda(const std::vector<BVHNode> &nodes,
         framebufferPtr);
 
     if (!ok)
-    {
-        std::cerr << "RenderFrameCuda: CUDA_RenderFrame_C вернул false\n";
-    }
+        std::cerr << "RenderFrameCuda: CUDA_RenderFrame_C returned false\n";
 
     return ok;
 #endif
@@ -127,7 +112,7 @@ bool RenderFrameCudaAccumulate(const std::vector<BVHNode> &nodes,
     (void)rootIndex;
     (void)cameraCPU;
     (void)framebuffer;
-    std::cerr << "RenderFrameCudaAccumulate: проект собран без USE_CUDA_RENDERER\n";
+    std::cerr << "RenderFrameCudaAccumulate: the project was built without USE_CUDA_RENDERER\n";
     return false;
 #else
     const int width = cameraCPU.width;
@@ -135,14 +120,13 @@ bool RenderFrameCudaAccumulate(const std::vector<BVHNode> &nodes,
 
     if (width <= 0 || height <= 0)
     {
-        std::cerr << "RenderFrameCudaAccumulate: некорректный размер кадра ("
-                  << width << "x" << height << ")\n";
+        std::cerr << "RenderFrameCudaAccumulate: invalid frame size (" << width << "x" << height << ")\n";
         return false;
     }
 
     if (nodes.empty() || tris.empty())
     {
-        std::cerr << "RenderFrameCudaAccumulate: пустые BVH или треугольники\n";
+        std::cerr << "RenderFrameCudaAccumulate: BVH or triangle data is empty\n";
         return false;
     }
 
@@ -170,9 +154,7 @@ bool RenderFrameCudaAccumulate(const std::vector<BVHNode> &nodes,
         framebufferPtr);
 
     if (!ok)
-    {
-        std::cerr << "RenderFrameCudaAccumulate: CUDA_RenderFrameAccum_C вернул false\n";
-    }
+        std::cerr << "RenderFrameCudaAccumulate: CUDA_RenderFrameAccum_C returned false\n";
 
     return ok;
 #endif
@@ -183,6 +165,6 @@ void ResetCudaAccumulation()
 #ifdef USE_CUDA_RENDERER
     CUDA_ResetAccumulation_C();
 #else
-    std::cerr << "ResetCudaAccumulation: проект собран без USE_CUDA_RENDERER\n";
+    std::cerr << "ResetCudaAccumulation: the project was built without USE_CUDA_RENDERER\n";
 #endif
 }

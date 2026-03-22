@@ -511,6 +511,6 @@ void Scene::clearLights()
 const Light &Scene::getMainLight() const
 {
     if (lights_.empty())
-        throw std::runtime_error("Scene::getMainLight: в сцене нет источников света");
+        throw std::runtime_error("Scene::getMainLight: the scene has no lights");
     return lights_.front();
 }

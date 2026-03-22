@@ -153,7 +153,7 @@ std::vector<SceneObject> OBJLoader::load(const std::string &path)
 {
     std::ifstream file(path);
     if (!file)
-        throw std::runtime_error("Не удалось открыть OBJ-файл: " + path);
+        throw std::runtime_error("Failed to open OBJ file: " + path);
 
     std::vector<SceneObject> objects;
     SceneObject currentObject("default");
@@ -186,7 +186,7 @@ std::vector<SceneObject> OBJLoader::load(const std::string &path)
             {
                 float x, y, z;
                 if (!parseFloat3(p0 + 1, x, y, z))
-                    throw std::runtime_error("Ошибка парсинга вершины: " + line);
+                    throw std::runtime_error("Failed to parse vertex: " + line);
                 positions.push_back(Vec3{x, y, z});
                 continue;
             }
@@ -194,7 +194,7 @@ std::vector<SceneObject> OBJLoader::load(const std::string &path)
             {
                 float x, y, z;
                 if (!parseFloat3(p0 + 2, x, y, z))
-                    throw std::runtime_error("Ошибка парсинга нормали: " + line);
+                    throw std::runtime_error("Failed to parse normal: " + line);
                 normals.push_back(Vec3{x, y, z});
                 continue;
             }
@@ -202,7 +202,7 @@ std::vector<SceneObject> OBJLoader::load(const std::string &path)
             {
                 float u, v;
                 if (!parseFloat2(p0 + 2, u, v))
-                    throw std::runtime_error("Ошибка парсинга текстурной координаты: " + line);
+                    throw std::runtime_error("Failed to parse texture coordinate: " + line);
                 texcoords.push_back(Vec2{u, v});
                 continue;
             }
@@ -399,3 +399,4 @@ void OBJLoader::processFace(const std::vector<OBJVertex> &vertices,
         object.addTriangle(t, materialId);
     }
 }
+

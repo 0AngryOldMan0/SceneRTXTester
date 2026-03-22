@@ -38,11 +38,11 @@ namespace
                               const std::string &filename)
     {
         if (width <= 0 || height <= 0)
-            throw std::runtime_error("Некорректный размер изображения при сохранении PNG");
+            throw std::runtime_error("Invalid image size while saving PNG");
 
         const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         if (framebuffer.size() != pixelCount)
-            throw std::runtime_error("Некорректный размер framebuffer при сохранении PNG");
+            throw std::runtime_error("Invalid framebuffer size while saving PNG");
 
         static thread_local std::vector<unsigned char> pixels;
         pixels.resize(pixelCount * 3u);
@@ -67,7 +67,7 @@ namespace
         const int stride = width * 3;
         const int ok = stbi_write_png(filename.c_str(), width, height, 3, pixels.data(), stride);
         if (!ok)
-            throw std::runtime_error("Не удалось записать PNG-файл: " + filename);
+            throw std::runtime_error("Failed to write PNG file: " + filename);
     }
 
     std::vector<int> BuildTextureSppSchedule(TextureRenderMode mode,
@@ -159,13 +159,13 @@ bool RenderManager::renderFrame(const Scene &scene,
     Renderer *renderer = getRenderer(rendererName);
     if (!renderer)
     {
-        std::cerr << "Рендерер '" << rendererName << "' не найден\n";
+        std::cerr << "Renderer '" << rendererName << "' was not found\n";
         return false;
     }
 
     if (!renderer->initialize())
     {
-        std::cerr << "Ошибка инициализации рендерера: " << rendererName << "\n";
+        std::cerr << "Failed to initialize renderer: " << rendererName << "\n";
         return false;
     }
 
@@ -211,13 +211,13 @@ bool RenderManager::renderFrameTexture(Scene &scene,
     Renderer *renderer = getRenderer(rendererName);
     if (!renderer)
     {
-        std::cerr << "Рендерер '" << rendererName << "' не найден\n";
+        std::cerr << "Renderer '" << rendererName << "' was not found\n";
         return false;
     }
 
     if (!renderer->initialize())
     {
-        std::cerr << "Ошибка инициализации рендерера: " << rendererName << "\n";
+        std::cerr << "Failed to initialize renderer: " << rendererName << "\n";
         return false;
     }
 
@@ -314,8 +314,8 @@ bool RenderManager::renderFrameTexture(Scene &scene,
 
     if (!handled)
     {
-        std::cerr << "RenderManager: активный рендерер не поддерживает texture render "
-                     "(ни Metal, ни HIP, ни CUDA)\n";
+        std::cerr << "RenderManager: the active renderer does not support texture rendering "
+                     "(neither Metal, HIP, nor CUDA)\n";
         success = false;
     }
 

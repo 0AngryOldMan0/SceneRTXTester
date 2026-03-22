@@ -2,6 +2,7 @@
 #include "CameraData.h"
 
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -14,11 +15,25 @@ namespace
         if (frames.empty())
             return;
 
-        const std::string filename = outputBase + "_HIP_GPU.txt";
+        const std::filesystem::path filename = std::filesystem::path(outputBase + "_HIP_GPU.txt");
+        const std::filesystem::path parentDir = filename.parent_path();
+        if (!parentDir.empty())
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(parentDir, ec);
+            if (ec)
+            {
+                std::cerr << "HIPRenderer: failed to create stats output directory: "
+                          << parentDir.string() << " (" << ec.message() << ")\n";
+                return;
+            }
+        }
+
         std::ofstream out(filename);
         if (!out)
         {
-            std::cerr << "HIPRenderer: failed to open stats output file: " << filename << "\n";
+            std::cerr << "HIPRenderer: failed to open stats output file: "
+                      << filename.string() << "\n";
             return;
         }
 

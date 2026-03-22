@@ -292,7 +292,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
     {
         std::ifstream jsonFile(path);
         if (!jsonFile)
-            throw std::runtime_error("Не удалось открыть Scene JSON: " + path);
+            throw std::runtime_error("Failed to open Scene JSON: " + path);
 
         try
         {
@@ -300,13 +300,13 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
         }
         catch (const std::exception& e)
         {
-            throw std::runtime_error(std::string("Ошибка парсинга Scene JSON: ") + e.what());
+            throw std::runtime_error(std::string("Failed to parse Scene JSON: ") + e.what());
         }
     }
 
     const std::string format = root.value("format", std::string{});
     if (format != "SceneRTXSceneExport")
-        throw std::runtime_error("SceneJSONLoader: JSON не является SceneRTXSceneExport: " + path);
+        throw std::runtime_error("SceneJSONLoader: JSON is not a SceneRTXSceneExport: " + path);
 
     const std::filesystem::path scenePath(path);
     const std::filesystem::path sceneDir = scenePath.parent_path();
@@ -317,7 +317,7 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
 
     std::ifstream binFile(meshesPath, std::ios::binary);
     if (!binFile)
-        throw std::runtime_error("Не удалось открыть meshes.bin: " + meshesPath.string());
+        throw std::runtime_error("Failed to open meshes.bin: " + meshesPath.string());
 
     {
         char magic[8] = {};
@@ -522,3 +522,4 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
 
     return objects;
 }
+

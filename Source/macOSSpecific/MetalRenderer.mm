@@ -1893,7 +1893,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
         !UploadSharedVector(g_device, g_meshNodeBuffer, meshNodes, dummyNode) ||
         !UploadSharedVector(g_device, g_instanceBuffer, instances, dummyInstance))
     {
-        std::cerr << "Metal: не удалось создать persistent буферы геометрии (texture)\n";
+        std::cerr << "Metal: failed to create persistent geometry buffers (texture)\n";
         return false;
     }
 
@@ -1905,7 +1905,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
         !UploadSharedValue(g_device, g_meshNodeCountBuffer, meshNodeCount) ||
         !UploadSharedValue(g_device, g_instanceCountBuffer, instanceCount))
     {
-        std::cerr << "Metal: не удалось создать persistent small geometry buffers\n";
+        std::cerr << "Metal: failed to create persistent small geometry buffers\n";
         return false;
     }
     profile.geometryBuffersMs = ToMilliseconds(ProfileClock::now() - geomStart);
@@ -1937,7 +1937,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
     if (!UploadSharedVector(g_device, g_lightBuffer, gpuLights, dummyLight) ||
         !UploadSharedValue(g_device, g_lightCountBuffer, lightCount))
     {
-        std::cerr << "Metal: не удалось создать persistent light buffers\n";
+        std::cerr << "Metal: failed to create persistent light buffers\n";
         return false;
     }
     profile.lightUploadMs = ToMilliseconds(ProfileClock::now() - lightStart);
@@ -1951,7 +1951,7 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
     if (!UploadSharedVector(g_device, g_emissiveTriangleBuffer, emissiveTrianglesCPU, dummyEmissive) ||
         !UploadSharedValue(g_device, g_emissiveTriangleCountBuffer, emissiveTriangleCount))
     {
-        std::cerr << "Metal: не удалось создать persistent emissive buffers\n";
+        std::cerr << "Metal: failed to create persistent emissive buffers\n";
         return false;
     }
     profile.emissiveDecalMs = ToMilliseconds(ProfileClock::now() - emissiveStart);
@@ -1973,7 +1973,7 @@ static bool EnsureDecalBufferUploaded(const SceneMetaResources *metaRes,
     if (!UploadSharedVector(g_device, g_decalBuffer, decalsCPU, dummyDecal) ||
         !UploadSharedValue(g_device, g_decalCountBuffer, decalCount))
     {
-        std::cerr << "Metal: не удалось создать persistent decal buffers\n";
+        std::cerr << "Metal: failed to create persistent decal buffers\n";
         return false;
     }
 
@@ -1995,7 +1995,7 @@ static bool EnsureAirDustBufferUploaded(const SceneMetaResources *metaRes,
     if (!UploadSharedVector(g_device, g_airDustVolumeBuffer, airDustCPU, dummyAirDust) ||
         !UploadSharedValue(g_device, g_airDustVolumeCountBuffer, airDustCount))
     {
-        std::cerr << "Metal: не удалось создать persistent air-dust buffers\n";
+        std::cerr << "Metal: failed to create persistent air-dust buffers\n";
         return false;
     }
 
@@ -2126,14 +2126,14 @@ bool InitMetalRenderer()
         g_device = MTLCreateSystemDefaultDevice();
         if (!g_device)
         {
-            std::cerr << "Metal: не удалось создать устройство\n";
+            std::cerr << "Metal: failed to create device\n";
             return false;
         }
 
         g_queue = [g_device newCommandQueue];
         if (!g_queue)
         {
-            std::cerr << "Metal: не удалось создать командную очередь\n";
+            std::cerr << "Metal: failed to create command queue\n";
             return false;
         }
 
@@ -2144,7 +2144,7 @@ bool InitMetalRenderer()
         id<MTLLibrary> lib = [g_device newLibraryWithURL:libURL error:&error];
         if (!lib || error)
         {
-            std::cerr << "Metal: не удалось загрузить RayTrace.metallib по пути: "
+            std::cerr << "Metal: failed to load RayTrace.metallib from path: "
                       << [libPath UTF8String] << "\n";
             if (error)
                 std::cerr << [[error localizedDescription] UTF8String] << std::endl;
@@ -2162,7 +2162,7 @@ bool InitMetalRenderer()
 
         if (!g_pipelineTexture || error)
         {
-            std::cerr << "Metal: не удалось создать compute pipeline state (RayTraceTextureKernel)\n";
+            std::cerr << "Metal: failed to create compute pipeline state (RayTraceTextureKernel)\n";
             if (error)
                 std::cerr << [[error localizedDescription] UTF8String] << std::endl;
             return false;
@@ -2298,7 +2298,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
         const auto interTexStart = ProfileClock::now();
         if (!EnsurePostProcessTextures(width, height))
         {
-            std::cerr << "Metal: не удалось создать post-process textures\n";
+            std::cerr << "Metal: failed to create post-process textures\n";
             return false;
         }
         profile.intermediateTexturesMs = ToMilliseconds(ProfileClock::now() - interTexStart);
@@ -2351,7 +2351,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             !UploadSharedValue(g_device, g_sampleCountBuffer, sampleBaseIndex) ||
             !UploadSharedValue(g_device, g_postProcessBuffer, pp))
         {
-            std::cerr << "Metal: не удалось обновить persistent small/frame buffers\n";
+            std::cerr << "Metal: failed to update persistent small/frame buffers\n";
             return false;
         }
         profile.smallBuffersMs = ToMilliseconds(ProfileClock::now() - smallStart);

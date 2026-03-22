@@ -98,9 +98,9 @@ namespace
     static void PrintUsage(const char* exe)
     {
         std::cerr
-            << "Использование:\n"
+            << "Usage:\n"
             << "  " << exe << " <scene_path.(obj/json)> [-preview] [-progressive] [meta.json] [width height] [spp]\n\n"
-            << "Примеры:\n"
+            << "Examples:\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/Subway.obj Scene/UE5/SubwayTonnel/Subway_meta.json 1920 1080 10\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json 1920 1080 10\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -preview\n";
@@ -108,7 +108,7 @@ namespace
 
     static int PromptCameraSelection(const std::vector<SceneMetaCameraInfo> &metaCameras)
     {
-        std::cout << "Доступные камеры:\n";
+        std::cout << "Available cameras:\n";
         std::cout << "  " << std::left << std::setw(8) << "Index" << "Name\n";
         std::cout << "  " << std::left << std::setw(8) << "-----" << "----\n";
 
@@ -120,7 +120,7 @@ namespace
 
         while (true)
         {
-            std::cout << "Введите номер камеры для рендера (-1 = все камеры): " << std::flush;
+            std::cout << "Enter the camera index to render (-1 = all cameras): " << std::flush;
 
             std::string input;
             if (!std::getline(std::cin, input))
@@ -129,7 +129,7 @@ namespace
             int selectedCamera = -1;
             if (!TryParseInt(input, selectedCamera))
             {
-                std::cout << "Некорректный ввод. Введите целое число от -1 до "
+                std::cout << "Invalid input. Enter an integer from -1 to "
                           << (metaCameras.empty() ? 0 : static_cast<int>(metaCameras.size() - 1))
                           << ".\n";
                 continue;
@@ -141,7 +141,7 @@ namespace
             if (selectedCamera >= 0 && static_cast<std::size_t>(selectedCamera) < metaCameras.size())
                 return selectedCamera;
 
-            std::cout << "Камеры с номером " << selectedCamera << " нет в списке.\n";
+            std::cout << "Camera index " << selectedCamera << " is not in the list.\n";
         }
     }
 
@@ -241,7 +241,7 @@ int main(int argc, char **argv)
         }
         if (!arg.empty() && arg[0] == '-')
         {
-            std::cerr << "Неизвестный флаг: " << arg << "\n";
+            std::cerr << "Unknown flag: " << arg << "\n";
             PrintUsage(argv[0]);
             return 1;
         }
@@ -289,7 +289,7 @@ int main(int argc, char **argv)
         auto loader = factory.createLoader(scenePath.string());
         if (!loader)
         {
-            std::cerr << "Неизвестный формат файла: " << scenePath.string() << "\n";
+            std::cerr << "Unknown file format: " << scenePath.string() << "\n";
             return 1;
         }
 
@@ -307,7 +307,7 @@ int main(int argc, char **argv)
         bool metaOkLights = LoadLightsAndMaterialsFromMeta(metaPath.string(), scene, &metaRes);
         if (!metaOkLights)
         {
-            std::cerr << "WARNING: не удалось загрузить lights/materials из meta: "
+            std::cerr << "WARNING: failed to load lights/materials from meta: "
                       << metaPath.string() << "\n";
         }
 
@@ -315,7 +315,7 @@ int main(int argc, char **argv)
         bool metaOkCams = LoadCamerasFromMeta(metaPath.string(), metaCameras);
         if (!metaOkCams)
         {
-            std::cerr << "WARNING: не удалось загрузить камеры из meta: "
+            std::cerr << "WARNING: failed to load cameras from meta: "
                       << metaPath.string() << "\n";
         }
 
@@ -366,7 +366,7 @@ int main(int argc, char **argv)
             {
                 if (!metal->preloadSceneResources())
                 {
-                    std::cerr << "Ошибка preload Metal resources\n";
+                    std::cerr << "Metal resource preload failed\n";
                     return 1;
                 }
             }
@@ -480,7 +480,8 @@ int main(int argc, char **argv)
     }
     catch (const std::exception &e)
     {
-        std::cerr << "Ошибка: " << e.what() << "\n";
+        std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 }
+
