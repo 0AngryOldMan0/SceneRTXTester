@@ -4,14 +4,23 @@ project(SceneRTXTester LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(SCENERTX_COMPAT_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build")
 
 # -----------------------
 # Флаги для конкретной сборки
 # -----------------------
 
-option(USE_CUDA_RENDERER  "Enable CUDA renderer for NVIDIA GPUs" OFF)
-option(USE_HIP_RENDERER   "Enable HIP renderer for AMD GPUs" OFF)
-option(USE_METAL_RENDERER "Enable Metal renderer for APPLE GPU" ON)
+set(SCENERTX_DEFAULT_CUDA OFF)
+set(SCENERTX_DEFAULT_HIP OFF)
+set(SCENERTX_DEFAULT_METAL OFF)
+
+if(APPLE)
+    set(SCENERTX_DEFAULT_METAL ON)
+endif()
+
+option(USE_CUDA_RENDERER  "Enable CUDA renderer for NVIDIA GPUs" ${SCENERTX_DEFAULT_CUDA})
+option(USE_HIP_RENDERER   "Enable HIP renderer for AMD GPUs" ${SCENERTX_DEFAULT_HIP})
+option(USE_METAL_RENDERER "Enable Metal renderer for APPLE GPU" ${SCENERTX_DEFAULT_METAL})
 
 if(USE_HIP_RENDERER AND USE_CUDA_RENDERER)
     message(WARNING "Building with both HIP and CUDA enabled is not validated. Prefer one Windows GPU backend per build preset.")
@@ -102,7 +111,18 @@ if(APPLE AND USE_METAL_RENDERER)
         VERBATIM
     )
 
-    add_custom_target(Shader ALL DEPENDS ${METAL_LIB})
+    set(METAL_LIB_COMPAT ${SCENERTX_COMPAT_BUILD_DIR}/RayTrace.metallib)
+
+    add_custom_command(
+        OUTPUT ${METAL_LIB_COMPAT}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${SCENERTX_COMPAT_BUILD_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${METAL_LIB} ${METAL_LIB_COMPAT}
+        DEPENDS ${METAL_LIB}
+        COMMENT "Copying RayTrace.metallib to build/RayTrace.metallib"
+        VERBATIM
+    )
+
+    add_custom_target(Shader ALL DEPENDS ${METAL_LIB_COMPAT})
 endif()
 
 # -----------------------
@@ -140,6 +160,15 @@ endif()
 add_executable(SceneRTXTester
     ${SRC_COMMON}
     $<$<AND:$<BOOL:${WIN32}>,$<BOOL:${USE_HIP_RENDERER}>>:${SRC_HIP}>
+)
+
+add_custom_command(TARGET SceneRTXTester POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${SCENERTX_COMPAT_BUILD_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:SceneRTXTester>"
+        "${SCENERTX_COMPAT_BUILD_DIR}/SceneRTXTester${CMAKE_EXECUTABLE_SUFFIX}"
+    COMMENT "Copying SceneRTXTester to build/SceneRTXTester${CMAKE_EXECUTABLE_SUFFIX}"
+    VERBATIM
 )
 
 target_compile_definitions(SceneRTXTester PRIVATE

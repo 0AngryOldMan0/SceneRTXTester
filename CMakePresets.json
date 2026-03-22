@@ -1,0 +1,160 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "NMake Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{VCToolsInstallDir}bin\\Hostx64\\x64\\cl.exe",
+        "CMAKE_CXX_COMPILER": "$env{VCToolsInstallDir}bin\\Hostx64\\x64\\cl.exe",
+        "USE_CUDA_RENDERER": "OFF",
+        "USE_HIP_RENDERER": "OFF",
+        "USE_METAL_RENDERER": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "Windows MSVC Debug",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Windows MSVC Release",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-hip-base",
+      "hidden": true,
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "USE_HIP_RENDERER": "ON",
+        "CMAKE_PREFIX_PATH": "$env{HIP_PATH}",
+        "CMAKE_HIP_ARCHITECTURES": "gfx1030"
+      }
+    },
+    {
+      "name": "windows-hip-debug",
+      "displayName": "Windows HIP Debug",
+      "inherits": "windows-hip-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-hip-release",
+      "displayName": "Windows HIP Release",
+      "inherits": "windows-hip-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-cuda-base",
+      "hidden": true,
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "USE_CUDA_RENDERER": "ON"
+      }
+    },
+    {
+      "name": "windows-cuda-debug",
+      "displayName": "Windows CUDA Debug",
+      "inherits": "windows-cuda-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-cuda-release",
+      "displayName": "Windows CUDA Release",
+      "inherits": "windows-cuda-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "USE_CUDA_RENDERER": "OFF",
+        "USE_HIP_RENDERER": "OFF",
+        "USE_METAL_RENDERER": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "displayName": "macOS Debug",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "macos-release",
+      "displayName": "macOS Release",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc-debug"
+    },
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release"
+    },
+    {
+      "name": "windows-hip-debug",
+      "configurePreset": "windows-hip-debug"
+    },
+    {
+      "name": "windows-hip-release",
+      "configurePreset": "windows-hip-release"
+    },
+    {
+      "name": "windows-cuda-debug",
+      "configurePreset": "windows-cuda-debug"
+    },
+    {
+      "name": "windows-cuda-release",
+      "configurePreset": "windows-cuda-release"
+    },
+    {
+      "name": "macos-debug",
+      "configurePreset": "macos-debug"
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos-release"
+    }
+  ]
+}
