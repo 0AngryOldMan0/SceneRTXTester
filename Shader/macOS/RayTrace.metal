@@ -100,18 +100,22 @@ struct Triangle
     packed_float3 v1;
     packed_float3 v2;
 
+    uint          vertexNormal[3];
+    uint          vertexTangent[3];
+
     packed_float2 uv[9];
 
     packed_float3 normal;
     AABB          ABoBa;
 
+    uint          vertexColor[3];
     packed_float3 color;
     packed_float3 emission;
     float metallic;
     float roughness;
 
     int   materialIndex;
-    int   _padMat;
+    float _padMat;
 };
 
 struct BVHNode

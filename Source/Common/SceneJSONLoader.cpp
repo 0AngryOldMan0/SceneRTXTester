@@ -21,6 +21,29 @@ namespace
 {
     using json = nlohmann::json;
 
+    static Vec3 NormalizeSafe(const Vec3& v, const Vec3& def);
+
+    static std::uint32_t PackSignedUnit10(float value)
+    {
+        const float clamped = std::clamp(value, -1.0f, 1.0f);
+        const float scaled = (clamped * 0.5f + 0.5f) * 1023.0f;
+        return static_cast<std::uint32_t>(scaled + 0.5f) & 0x3FFu;
+    }
+
+    static std::uint32_t PackDirection10(const Vec3& direction)
+    {
+        return PackSignedUnit10(direction.x) |
+               (PackSignedUnit10(direction.y) << 10) |
+               (PackSignedUnit10(direction.z) << 20);
+    }
+
+    static std::uint32_t PackTangent10(const Vec4& tangent)
+    {
+        const Vec3 tangentDir = NormalizeSafe(Vec3{tangent.x, tangent.y, tangent.z}, Vec3{0.0f, 0.0f, 0.0f});
+        const std::uint32_t handednessBit = (tangent.w < 0.0f) ? (1u << 30) : 0u;
+        return PackDirection10(tangentDir) | handednessBit;
+    }
+
     struct SectionInfo
     {
         uint32_t firstIndex = 0;
@@ -33,6 +56,8 @@ namespace
     {
         std::vector<Vec3> positions;
         std::vector<Vec3> normals;
+        std::vector<Vec4> tangents;
+        std::vector<std::uint32_t> colors;
         std::array<std::vector<Vec2>, 3> uvSets;
         std::vector<uint32_t> indices;
         std::vector<SectionInfo> defaultSections;
@@ -143,12 +168,23 @@ namespace
 
         const std::uint64_t positionsOffset = (std::uint64_t)lod.value("positions_offset", 0ull);
         const std::uint64_t normalsOffset   = (std::uint64_t)lod.value("normals_offset", 0ull);
+        const std::uint64_t tangentsOffset  = (std::uint64_t)lod.value("tangents_offset", 0ull);
+        const std::uint64_t colorsOffset    = (std::uint64_t)lod.value("colors_offset", 0ull);
         const std::uint64_t uvsOffset       = (std::uint64_t)lod.value("uvs_offset", 0ull);
         const std::uint64_t indicesOffset   = (std::uint64_t)lod.value("indices_offset", 0ull);
 
         ReadVectorAt(binFile, positionsOffset, mesh.positions, vertexCount);
         ReadVectorAt(binFile, normalsOffset,   mesh.normals,   vertexCount);
         ReadVectorAt(binFile, indicesOffset,   mesh.indices,   indexCount);
+        if (tangentsOffset > 0ull)
+            ReadVectorAt(binFile, tangentsOffset, mesh.tangents, vertexCount);
+        else
+            mesh.tangents.assign(vertexCount, Vec4{0.0f, 0.0f, 0.0f, 1.0f});
+
+        if (colorsOffset > 0ull)
+            ReadVectorAt(binFile, colorsOffset, mesh.colors, vertexCount);
+        else
+            mesh.colors.assign(vertexCount, 0xFFFFFFFFu);
 
         if (uvSetCount > 0)
         {
@@ -480,6 +516,17 @@ std::vector<SceneObject> SceneJSONLoader::load(const std::string& path)
                     nrm = normalize(cross(e1, e2));
                 }
                 t.normal = nrm;
+                t.vertexNormal[0] = PackDirection10((i0 < mesh.normals.size()) ? NormalizeSafe(mesh.normals[i0], nrm) : nrm);
+                t.vertexNormal[1] = PackDirection10((i1 < mesh.normals.size()) ? NormalizeSafe(mesh.normals[i1], nrm) : nrm);
+                t.vertexNormal[2] = PackDirection10((i2 < mesh.normals.size()) ? NormalizeSafe(mesh.normals[i2], nrm) : nrm);
+
+                t.vertexTangent[0] = (i0 < mesh.tangents.size()) ? PackTangent10(mesh.tangents[i0]) : 0x20080200u;
+                t.vertexTangent[1] = (i1 < mesh.tangents.size()) ? PackTangent10(mesh.tangents[i1]) : 0x20080200u;
+                t.vertexTangent[2] = (i2 < mesh.tangents.size()) ? PackTangent10(mesh.tangents[i2]) : 0x20080200u;
+
+                t.vertexColor[0] = (i0 < mesh.colors.size()) ? mesh.colors[i0] : 0xFFFFFFFFu;
+                t.vertexColor[1] = (i1 < mesh.colors.size()) ? mesh.colors[i1] : 0xFFFFFFFFu;
+                t.vertexColor[2] = (i2 < mesh.colors.size()) ? mesh.colors[i2] : 0xFFFFFFFFu;
 
                 ComputeTriAABB(t);
 

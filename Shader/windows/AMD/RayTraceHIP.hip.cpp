@@ -200,6 +200,7 @@ struct HitInfo
     float3 emission = float3(0.0f);
     float metallic = 0.0f;
     float roughness = 0.5f;
+    float3 barycentrics = float3(1.0f, 0.0f, 0.0f);
     float2 uv0 = float2(0.0f);
     float2 uv1 = float2(0.0f);
     float2 uv2 = float2(0.0f);
@@ -349,6 +350,16 @@ __device__ static inline float3 EncodeEmissiveDebug(float3 emissive)
     return emissive / (float3(1.0f) + emissive);
 }
 
+__device__ static inline float3 EncodeVertexColorDebug(float4 vertexColor)
+{
+    const float alpha = clamp01(vertexColor.w);
+    const float3 rgb = clamp(float3(vertexColor.x, vertexColor.y, vertexColor.z), 0.0f, 1.0f);
+    const float maxChannel = max(rgb.x, max(rgb.y, rgb.z));
+    if (maxChannel <= 1.0e-4f)
+        return float3(alpha);
+    return clamp(rgb * (0.25f + 0.75f * alpha), 0.0f, 1.0f);
+}
+
 __device__ static inline float3 EncodeMaterialModelDebug(int materialModel)
 {
     switch (materialModel)
@@ -373,7 +384,7 @@ __device__ static inline float3 EvaluateDebugView(std::uint32_t debugView,
                                                   float roughness,
                                                   float metallic,
                                                   float3 emissive,
-                                                  float3 vertexColor,
+                                                  float4 vertexColor,
                                                   int materialModel)
 {
     switch (static_cast<HIPDebugView>(debugView))
@@ -396,7 +407,7 @@ __device__ static inline float3 EvaluateDebugView(std::uint32_t debugView,
         case HIPDebugView::Emissive:
             return EncodeEmissiveDebug(emissive);
         case HIPDebugView::VertexColor:
-            return clamp(vertexColor, 0.0f, 1.0f);
+            return EncodeVertexColorDebug(vertexColor);
         case HIPDebugView::MaterialModel:
             return EncodeMaterialModelDebug(materialModel);
         case HIPDebugView::Disabled:
@@ -470,12 +481,74 @@ __device__ static inline float2 triangleUvVertex(const Triangle &tri, int uvSet,
     return float2(tri.uv[setIndex * 3 + vertex]);
 }
 
+__device__ static inline float decodePackedSignedUnit10(std::uint32_t bits)
+{
+    return static_cast<float>(bits & 0x3FFu) * (2.0f / 1023.0f) - 1.0f;
+}
+
+__device__ static inline float3 decodePackedDirection10(std::uint32_t packed)
+{
+    return float3(decodePackedSignedUnit10(packed),
+                  decodePackedSignedUnit10(packed >> 10),
+                  decodePackedSignedUnit10(packed >> 20));
+}
+
+__device__ static inline float3 triangleNormalVertex(const Triangle &tri, int vertexIndex)
+{
+    const int vertex = max(0, min(vertexIndex, 2));
+    const float3 n = decodePackedDirection10(tri.vertexNormal[vertex]);
+    const float len2 = dot(n, n);
+    if (len2 > 1.0e-16f)
+        return safeNormalize(n);
+    return safeNormalize(float3(tri.normal));
+}
+
+__device__ static inline float4 triangleTangentVertex(const Triangle &tri, int vertexIndex)
+{
+    const int vertex = max(0, min(vertexIndex, 2));
+    const std::uint32_t packed = tri.vertexTangent[vertex];
+    const float3 tangent = decodePackedDirection10(packed);
+    const float handedness = ((packed >> 30) & 0x1u) != 0u ? -1.0f : 1.0f;
+    return float4(tangent.x, tangent.y, tangent.z, handedness);
+}
+
+__device__ static inline float4 decodePackedVertexColor(std::uint32_t packedColor)
+{
+    constexpr float inv255 = 1.0f / 255.0f;
+    return float4(static_cast<float>(packedColor & 0xFFu) * inv255,
+                  static_cast<float>((packedColor >> 8) & 0xFFu) * inv255,
+                  static_cast<float>((packedColor >> 16) & 0xFFu) * inv255,
+                  static_cast<float>((packedColor >> 24) & 0xFFu) * inv255);
+}
+
+__device__ static inline float4 triangleVertexColor(const Triangle &tri, int vertexIndex)
+{
+    const int vertex = max(0, min(vertexIndex, 2));
+    return decodePackedVertexColor(tri.vertexColor[vertex]);
+}
+
 __device__ static inline float2 triangleSampleUvSet(const Triangle &tri, float b0, float b1, float b2, int uvSet)
 {
     const float2 uv0 = triangleUvVertex(tri, uvSet, 0);
     const float2 uv1 = triangleUvVertex(tri, uvSet, 1);
     const float2 uv2 = triangleUvVertex(tri, uvSet, 2);
     return uv0 * b0 + uv1 * b1 + uv2 * b2;
+}
+
+__device__ static inline float3 triangleSampleVertexNormal(const Triangle &tri, float b0, float b1, float b2)
+{
+    const float3 n0 = triangleNormalVertex(tri, 0);
+    const float3 n1 = triangleNormalVertex(tri, 1);
+    const float3 n2 = triangleNormalVertex(tri, 2);
+    return safeNormalize(n0 * b0 + n1 * b1 + n2 * b2);
+}
+
+__device__ static inline float4 triangleSampleVertexColor(const Triangle &tri, float b0, float b1, float b2)
+{
+    const float4 c0 = triangleVertexColor(tri, 0);
+    const float4 c1 = triangleVertexColor(tri, 1);
+    const float4 c2 = triangleVertexColor(tri, 2);
+    return c0 * b0 + c1 * b1 + c2 * b2;
 }
 
 __device__ static inline float2 selectUvSet(float2 uv0, float2 uv1, float2 uv2, int uvSet)
@@ -641,6 +714,7 @@ __device__ static inline HitInfo traceRayBVH(const BVHNode *nodes, const Triangl
                 result.emission = float3(tri.emission);
                 result.metallic = tri.metallic;
                 result.roughness = tri.roughness;
+                result.barycentrics = float3(wHit, uHit, vHit);
                 result.uv0 = triangleSampleUvSet(tri, wHit, uHit, vHit, 0);
                 result.uv1 = triangleSampleUvSet(tri, wHit, uHit, vHit, 1);
                 result.uv2 = triangleSampleUvSet(tri, wHit, uHit, vHit, 2);
@@ -1054,40 +1128,98 @@ __device__ static inline void computeTangentBasis(const Triangle *triangles,
     B = safeNormalize(cross(N, T) * handedness);
 }
 
+__device__ static inline bool computeExportedTangentBasis(const Triangle *triangles,
+                                                          int triIndex,
+                                                          float3 barycentrics,
+                                                          float3 localN,
+                                                          float3 &T,
+                                                          float3 &B)
+{
+    const Triangle &tri = triangles[triIndex];
+    const float4 t0 = triangleTangentVertex(tri, 0);
+    const float4 t1 = triangleTangentVertex(tri, 1);
+    const float4 t2 = triangleTangentVertex(tri, 2);
+
+    float3 tangent = float3(t0.x, t0.y, t0.z) * barycentrics.x +
+                     float3(t1.x, t1.y, t1.z) * barycentrics.y +
+                     float3(t2.x, t2.y, t2.z) * barycentrics.z;
+    tangent = tangent - localN * dot(localN, tangent);
+    if (dot(tangent, tangent) <= 1.0e-8f)
+        return false;
+
+    T = safeNormalize(tangent);
+    float handedness = t0.w * barycentrics.x + t1.w * barycentrics.y + t2.w * barycentrics.z;
+    if (fabsf(handedness) <= 1.0e-4f)
+        handedness = (t0.w < 0.0f || t1.w < 0.0f || t2.w < 0.0f) ? -1.0f : 1.0f;
+    else
+        handedness = (handedness < 0.0f) ? -1.0f : 1.0f;
+
+    B = safeNormalize(cross(localN, T) * handedness);
+    return dot(B, B) > 1.0e-8f;
+}
+
 __device__ static inline void computeTangentBasisInstanced(const Triangle *triangles,
                                                            const SceneInstanceGPU *instances,
                                                            int instanceIndex,
                                                            int triIndex,
                                                            int uvSet,
+                                                           float3 barycentrics,
                                                            float3 N,
                                                            float3 &T,
                                                            float3 &B)
 {
-    const float3 localN = safeNormalize(float3(triangles[triIndex].normal));
-    computeTangentBasis(triangles, triIndex, sanitizeUvSet(uvSet), localN, T, B);
+    const float3 localN = triangleSampleVertexNormal(triangles[triIndex],
+                                                     barycentrics.x,
+                                                     barycentrics.y,
+                                                     barycentrics.z);
 
+    float3 localT = float3(0.0f);
+    float3 localB = float3(0.0f);
+    if (!computeExportedTangentBasis(triangles, triIndex, barycentrics, localN, localT, localB))
+        computeTangentBasis(triangles, triIndex, sanitizeUvSet(uvSet), localN, localT, localB);
+
+    float3 worldT = localT;
+    float3 worldB = localB;
     if (instances != nullptr && instanceIndex >= 0)
     {
         const SceneInstanceGPU &inst = instances[instanceIndex];
-        T = safeNormalize(transformDirectionObjectToWorld(inst, T));
-        T = safeNormalize(T - N * dot(N, T));
-        const float handedness = (dot(cross(N, T), B) < 0.0f) ? -1.0f : 1.0f;
-        B = safeNormalize(cross(N, T) * handedness);
+        worldT = transformDirectionObjectToWorld(inst, localT);
+        worldB = transformDirectionObjectToWorld(inst, localB);
     }
+
+    T = worldT - N * dot(N, worldT);
+    if (dot(T, T) <= 1.0e-8f)
+    {
+        buildOrthonormalBasis(N, T, B);
+        return;
+    }
+    T = safeNormalize(T);
+
+    worldB = worldB - N * dot(N, worldB) - T * dot(T, worldB);
+    if (dot(worldB, worldB) <= 1.0e-8f)
+    {
+        B = safeNormalize(cross(N, T));
+        return;
+    }
+
+    worldB = safeNormalize(worldB);
+    const float handedness = (dot(cross(N, T), worldB) < 0.0f) ? -1.0f : 1.0f;
+    B = safeNormalize(cross(N, T) * handedness);
 }
 
 __device__ static inline float3 sampleNormalMapInstanced(int normalTexIndex,
                                                          int normalUvSet,
                                                          float2 uv,
-                                                         float3 Ng,
+                                                         float3 shadingNormal,
                                                          const Triangle *triangles,
                                                          const SceneInstanceGPU *instances,
                                                          int instanceIndex,
                                                          int triIndex,
+                                                         float3 barycentrics,
                                                          const SceneTextureArray &sceneTextures)
 {
     if (normalTexIndex < 0 || static_cast<uint>(normalTexIndex) >= sceneTextures.textureCount)
-        return Ng;
+        return shadingNormal;
 
     float3 nTex = sampleTextureRGB(normalTexIndex, fract(uv), sceneTextures, float3(0.5f, 0.5f, 1.0f)) * 2.0f - 1.0f;
     if (NORMALMAP_FLIP_Y)
@@ -1096,8 +1228,16 @@ __device__ static inline float3 sampleNormalMapInstanced(int normalTexIndex,
 
     float3 T;
     float3 B;
-    computeTangentBasisInstanced(triangles, instances, instanceIndex, triIndex, normalUvSet, Ng, T, B);
-    return safeNormalize(nTex.x * T + nTex.y * B + nTex.z * Ng);
+    computeTangentBasisInstanced(triangles,
+                                 instances,
+                                 instanceIndex,
+                                 triIndex,
+                                 normalUvSet,
+                                 barycentrics,
+                                 shadingNormal,
+                                 T,
+                                 B);
+    return safeNormalize(nTex.x * T + nTex.y * B + nTex.z * shadingNormal);
 }
 
 __device__ static inline float sampleEmissiveMask(const SampledTexel &texel)
@@ -1155,6 +1295,30 @@ __device__ static inline float3 triangleFaceNormal(const Triangle &tri)
     if (len2 > 1.0e-16f)
         return safeNormalize(n);
     return safeNormalize(float3(tri.normal));
+}
+
+__device__ static inline float3 triangleFaceNormalInstanced(const Triangle *triangles,
+                                                            const SceneInstanceGPU *instances,
+                                                            int instanceIndex,
+                                                            int triIndex)
+{
+    float3 n = triangleFaceNormal(triangles[triIndex]);
+    if (instances != nullptr && instanceIndex >= 0)
+        n = safeNormalize(transformNormalObjectToWorld(instances[instanceIndex], n));
+    return n;
+}
+
+__device__ static inline float3 triangleSampleVertexNormalInstanced(const Triangle *triangles,
+                                                                    const SceneInstanceGPU *instances,
+                                                                    int instanceIndex,
+                                                                    int triIndex,
+                                                                    float3 barycentrics)
+{
+    const Triangle &tri = triangles[triIndex];
+    float3 n = triangleSampleVertexNormal(tri, barycentrics.x, barycentrics.y, barycentrics.z);
+    if (instances != nullptr && instanceIndex >= 0)
+        n = safeNormalize(transformNormalObjectToWorld(instances[instanceIndex], n));
+    return n;
 }
 
 __device__ static inline bool traceShadowSceneBVH(const BVHNode *tlasNodes,
@@ -2413,10 +2577,20 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             }
 
             float3 hitPos = hit.position;
-            const float3 NgRaw = safeNormalize(hit.normal);
-            float3 N = NgRaw;
+            const float3 barycentrics = hit.barycentrics;
+            const float3 NgRaw = triangleFaceNormalInstanced(triangles,
+                                                             instances,
+                                                             hit.instanceIndex,
+                                                             hit.triIndex);
+            float3 N = triangleSampleVertexNormalInstanced(triangles,
+                                                           instances,
+                                                           hit.instanceIndex,
+                                                           hit.triIndex,
+                                                           barycentrics);
+            if (dot(N, N) <= 1.0e-8f)
+                N = safeNormalize(hit.normal);
             float3 Ng = NgRaw;
-            float3 Ns = NgRaw;
+            float3 Ns = N;
 
             float3 baseColor = hit.color;
             const float3 baseColorFactor = baseColor;
@@ -2430,9 +2604,10 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             float metallic = clamp(hit.metallic, 0.0f, 1.0f);
             float roughness = clamp(hit.roughness, 0.02f, 0.98f);
             float ao = 1.0f;
-            // Vertex colors are not wired into the triangle payload yet.
-            // Keep the debug view explicit so missing mesh-color driven blends are obvious.
-            const float3 vertexColorDebug = float3(1.0f, 0.0f, 1.0f);
+            const float4 vertexColorDebug = triangleSampleVertexColor(triangles[hit.triIndex],
+                                                                      barycentrics.x,
+                                                                      barycentrics.y,
+                                                                      barycentrics.z);
             int materialModelDebug = DEBUG_MATERIAL_MODEL_NONE;
 
             if (materialsPBR != nullptr && matId >= 0 && static_cast<uint>(matId) < materialPBRCount)
@@ -2466,7 +2641,16 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                 if (mp.occlusionTexIndex >= 0)
                     ao = clamp01(sampleTextureR(mp.occlusionTexIndex, uvOcclusion, sceneTextures, ao));
                 if (mp.normalTexIndex >= 0)
-                    Ns = sampleNormalMapInstanced(mp.normalTexIndex, mp.normalUvSet, uvNormal, Ng, triangles, instances, hit.instanceIndex, hit.triIndex, sceneTextures);
+                    Ns = sampleNormalMapInstanced(mp.normalTexIndex,
+                                                  mp.normalUvSet,
+                                                  uvNormal,
+                                                  N,
+                                                  triangles,
+                                                  instances,
+                                                  hit.instanceIndex,
+                                                  hit.triIndex,
+                                                  barycentrics,
+                                                  sceneTextures);
 
                 if (mp.specialModel == SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT)
                 {

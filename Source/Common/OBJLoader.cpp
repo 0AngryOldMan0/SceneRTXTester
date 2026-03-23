@@ -6,9 +6,24 @@
 #include <cstring>   // std::memcmp, std::strlen
 #include <cstdlib>   // std::strtof
 #include <algorithm>
+#include <cstdint>
 
 namespace
 {
+    inline std::uint32_t packSignedUnit10(float value)
+    {
+        const float clamped = std::max(-1.0f, std::min(value, 1.0f));
+        const float scaled = (clamped * 0.5f + 0.5f) * 1023.0f;
+        return static_cast<std::uint32_t>(scaled + 0.5f) & 0x3FFu;
+    }
+
+    inline std::uint32_t packDirection10(const Vec3& direction)
+    {
+        return packSignedUnit10(direction.x) |
+               (packSignedUnit10(direction.y) << 10) |
+               (packSignedUnit10(direction.z) << 20);
+    }
+
     inline const char* skipWs(const char* p)
     {
         while (*p == ' ' || *p == '\t' || *p == '\r')
@@ -387,6 +402,9 @@ void OBJLoader::processFace(const std::vector<OBJVertex> &vertices,
         }
 
         t.normal = nrm;
+        t.vertexNormal[0] = packDirection10((n0.x != 0.0f || n0.y != 0.0f || n0.z != 0.0f) ? normalize(n0) : nrm);
+        t.vertexNormal[1] = packDirection10((n1.x != 0.0f || n1.y != 0.0f || n1.z != 0.0f) ? normalize(n1) : nrm);
+        t.vertexNormal[2] = packDirection10((n2.x != 0.0f || n2.y != 0.0f || n2.z != 0.0f) ? normalize(n2) : nrm);
 
         computeTriAABB(t);
 

@@ -4,6 +4,7 @@
 #include <vector_functions.h>
 #include <math_constants.h>
 #include <cuda_fp16.h>
+#include <cstdint>
 
 #define PI               3.14159265358979323846f
 #define INV_PI           0.31830988618379067154f
@@ -31,20 +32,29 @@ struct AABB
     float3 v1; // max
 };
 
+struct PackedFloat2
+{
+    float x, y;
+};
+
 struct Triangle
 {
     float3 v0;
     float3 v1;
     float3 v2;
+    std::uint32_t vertexNormal[3];
+    std::uint32_t vertexTangent[3];
+    PackedFloat2 uv[9];
     float3 normal;
     AABB   ABoBa;
 
+    std::uint32_t vertexColor[3];
     float3 color;
     float3 emission;
     float metallic;
     float roughness;
-    float _pad0;
-    float _pad1;
+    int materialIndex;
+    float _padMat;
 };
 
 struct BVHNode
@@ -117,7 +127,7 @@ struct LightGPU
 
 static_assert(sizeof(float3) == 12, "float3 must be 12 bytes (3 floats)");
 static_assert(sizeof(AABB) == 24, "AABB size mismatch between CPU and CUDA");
-static_assert(sizeof(Triangle) == 112, "Triangle size mismatch between CPU and CUDA");
+static_assert(sizeof(Triangle) == 220, "Triangle size mismatch between CPU and CUDA");
 static_assert(sizeof(CameraData) == 80, "CameraData size mismatch between CPU and CUDA");
 static_assert(sizeof(LightGPU) == 60, "LightGPU size mismatch between CPU and CUDA");
 
