@@ -50,7 +50,8 @@ public:
                             const std::string &rendererName,
                             const std::string &outputPath,
                             TextureRenderMode mode = TextureRenderMode::Progressive,
-                            int baseSamplesPerPixel = 4);
+                            int baseSamplesPerPixel = 4,
+                            bool exportHipDebugViews = false);
 
 private:
     std::vector<std::unique_ptr<Renderer>> renderers_;

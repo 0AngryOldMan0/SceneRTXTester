@@ -18,6 +18,20 @@ constexpr int HIP_SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT = 2;
 constexpr std::uint32_t HIP_INSTANCE_FLAG_CASTS_SHADOW = 1u;
 constexpr std::uint32_t HIP_LIGHT_FLAG_CASTS_SHADOW = 1u;
 
+enum class HIPDebugView : std::uint32_t
+{
+    Disabled = 0u,
+    Ns = 1u,
+    AO = 2u,
+    NsMinusNg = 3u,
+    BaseColor = 4u,
+    Roughness = 5u,
+    Metallic = 6u,
+    Emissive = 7u,
+    VertexColor = 8u,
+    MaterialModel = 9u
+};
+
 struct HIPSceneInstanceGPU
 {
     float objectToWorld[12] = {
@@ -229,6 +243,11 @@ struct HIPPostProcessParams
     float fogMaxOpacity = 1.0f;
     float fogHeightZ = 0.0f;
     float worldUnitToMeters = 1.0f;
+
+    std::uint32_t debugView = 0u;
+    float _pad1 = 0.0f;
+    float _pad2 = 0.0f;
+    float _pad3 = 0.0f;
 };
 
 struct HIPTextureDescGPU
@@ -257,7 +276,7 @@ static_assert(sizeof(HIPMaterialPBRGPU) == 112, "HIPMaterialPBRGPU size must be 
 static_assert(sizeof(HIPDecalGPU) == 128, "HIPDecalGPU size must be 128 bytes");
 static_assert(sizeof(HIPEmissiveTriangleGPU) == 20, "HIPEmissiveTriangleGPU size must be 20 bytes");
 static_assert(sizeof(HIPAirDustVolumeGPU) == 64, "HIPAirDustVolumeGPU size must be 64 bytes");
-static_assert(sizeof(HIPPostProcessParams) == 144, "HIPPostProcessParams size must be 144 bytes");
+static_assert(sizeof(HIPPostProcessParams) == 160, "HIPPostProcessParams size must be 160 bytes");
 static_assert(sizeof(HIPTextureDescGPU) == 24, "HIPTextureDescGPU size must be 24 bytes");
 
 extern "C" bool HIP_RenderFrameTexture_C(const BVHNode *tlasNodes,

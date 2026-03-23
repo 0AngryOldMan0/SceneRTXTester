@@ -112,8 +112,8 @@ constexpr bool DENOISE_ENABLE = true;
 constexpr float DENOISE_SIGMA_SPACE = 1.0f;
 constexpr float DENOISE_SIGMA_COLOR = 0.20f;
 constexpr float DENOISE_BLEND_FACTOR = 0.40f;
+constexpr float AO_INDIRECT_STRENGTH = 0.85f;
 constexpr bool NORMALMAP_FLIP_Y = false;
-constexpr int UV_DEBUG_MODE = 0;
 constexpr int LIGHTING_CALIBRATION_MODE = 0;
 constexpr int BLOCK_SIZE = 8;
 constexpr int LIGHT_TYPE_POINT = 0;
@@ -124,6 +124,13 @@ constexpr int MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = HIP_MATERIAL_FLAG_EMISSION
 constexpr int MATERIAL_FLAG_THIN_EMISSIVE_SURFACE = HIP_MATERIAL_FLAG_THIN_EMISSIVE_SURFACE;
 constexpr int SPECIAL_MATERIAL_UE_HEADLIGHT = HIP_SPECIAL_MATERIAL_UE_HEADLIGHT;
 constexpr int SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT = HIP_SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT;
+constexpr int DEBUG_MATERIAL_MODEL_NONE = 0;
+constexpr int DEBUG_MATERIAL_MODEL_LEGACY_SIMPLE = 1;
+constexpr int DEBUG_MATERIAL_MODEL_GENERIC_PBR = 2;
+constexpr int DEBUG_MATERIAL_MODEL_THIN_EMISSIVE = 3;
+constexpr int DEBUG_MATERIAL_MODEL_UE_HEADLIGHT = 4;
+constexpr int DEBUG_MATERIAL_MODEL_UE_TRAFFIC_LIGHT = 5;
+constexpr int DEBUG_MATERIAL_MODEL_GENERIC_EMISSIVE = 6;
 constexpr std::uint32_t INSTANCE_FLAG_CASTS_SHADOW = HIP_INSTANCE_FLAG_CASTS_SHADOW;
 constexpr std::uint32_t LIGHT_FLAG_CASTS_SHADOW = HIP_LIGHT_FLAG_CASTS_SHADOW;
 
@@ -324,6 +331,78 @@ __device__ static inline float rand01(uint seed)
 __device__ static inline float clamp01(float x)
 {
     return clamp(x, 0.0f, 1.0f);
+}
+
+__device__ static inline float3 EncodeNormalDebug(float3 n)
+{
+    return clamp(normalize(n) * 0.5f + float3(0.5f), 0.0f, 1.0f);
+}
+
+__device__ static inline float3 EncodeScalarDebug(float value)
+{
+    return float3(clamp01(value));
+}
+
+__device__ static inline float3 EncodeEmissiveDebug(float3 emissive)
+{
+    emissive = max(emissive, float3(0.0f));
+    return emissive / (float3(1.0f) + emissive);
+}
+
+__device__ static inline float3 EncodeMaterialModelDebug(int materialModel)
+{
+    switch (materialModel)
+    {
+        case DEBUG_MATERIAL_MODEL_LEGACY_SIMPLE:    return float3(0.55f, 0.55f, 0.55f);
+        case DEBUG_MATERIAL_MODEL_GENERIC_PBR:      return float3(0.24f, 0.55f, 1.00f);
+        case DEBUG_MATERIAL_MODEL_THIN_EMISSIVE:    return float3(1.00f, 0.62f, 0.10f);
+        case DEBUG_MATERIAL_MODEL_UE_HEADLIGHT:     return float3(0.18f, 1.00f, 1.00f);
+        case DEBUG_MATERIAL_MODEL_UE_TRAFFIC_LIGHT: return float3(1.00f, 0.18f, 0.18f);
+        case DEBUG_MATERIAL_MODEL_GENERIC_EMISSIVE: return float3(1.00f, 1.00f, 0.18f);
+        case DEBUG_MATERIAL_MODEL_NONE:
+        default:
+            return float3(0.0f);
+    }
+}
+
+__device__ static inline float3 EvaluateDebugView(std::uint32_t debugView,
+                                                  float3 Ng,
+                                                  float3 Ns,
+                                                  float ao,
+                                                  float3 baseColor,
+                                                  float roughness,
+                                                  float metallic,
+                                                  float3 emissive,
+                                                  float3 vertexColor,
+                                                  int materialModel)
+{
+    switch (static_cast<HIPDebugView>(debugView))
+    {
+        case HIPDebugView::Ns:
+            return EncodeNormalDebug(Ns);
+        case HIPDebugView::AO:
+            return EncodeScalarDebug(ao);
+        case HIPDebugView::NsMinusNg:
+        {
+            const float diff = clamp01(0.5f * length(normalize(Ns) - normalize(Ng)));
+            return float3(diff);
+        }
+        case HIPDebugView::BaseColor:
+            return clamp(baseColor, 0.0f, 1.0f);
+        case HIPDebugView::Roughness:
+            return EncodeScalarDebug(roughness);
+        case HIPDebugView::Metallic:
+            return EncodeScalarDebug(metallic);
+        case HIPDebugView::Emissive:
+            return EncodeEmissiveDebug(emissive);
+        case HIPDebugView::VertexColor:
+            return clamp(vertexColor, 0.0f, 1.0f);
+        case HIPDebugView::MaterialModel:
+            return EncodeMaterialModelDebug(materialModel);
+        case HIPDebugView::Disabled:
+        default:
+            return float3(0.0f);
+    }
 }
 
 __device__ static inline float3 lerp3(float3 a, float3 b, float t)
@@ -991,11 +1070,9 @@ __device__ static inline void computeTangentBasisInstanced(const Triangle *trian
     {
         const SceneInstanceGPU &inst = instances[instanceIndex];
         T = safeNormalize(transformDirectionObjectToWorld(inst, T));
-        B = safeNormalize(transformDirectionObjectToWorld(inst, B));
         T = safeNormalize(T - N * dot(N, T));
-        B = safeNormalize(B - N * dot(N, B));
-        if (dot(cross(N, T), B) < 0.0f)
-            B = -B;
+        const float handedness = (dot(cross(N, T), B) < 0.0f) ? -1.0f : 1.0f;
+        B = safeNormalize(cross(N, T) * handedness);
     }
 }
 
@@ -2329,6 +2406,8 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
 
             if (!(hit.hit && hit.triIndex >= 0))
             {
+                if (bounce == 0 && volumeParams.debugView != static_cast<std::uint32_t>(HIPDebugView::Disabled))
+                    break;
                 radiance += throughput * environmentColor(safeNormalize(ray.direction));
                 break;
             }
@@ -2351,10 +2430,15 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             float metallic = clamp(hit.metallic, 0.0f, 1.0f);
             float roughness = clamp(hit.roughness, 0.02f, 0.98f);
             float ao = 1.0f;
+            // Vertex colors are not wired into the triangle payload yet.
+            // Keep the debug view explicit so missing mesh-color driven blends are obvious.
+            const float3 vertexColorDebug = float3(1.0f, 0.0f, 1.0f);
+            int materialModelDebug = DEBUG_MATERIAL_MODEL_NONE;
 
             if (materialsPBR != nullptr && matId >= 0 && static_cast<uint>(matId) < materialPBRCount)
             {
                 const MaterialGPU_PBR mp = materialsPBR[matId];
+                materialModelDebug = DEBUG_MATERIAL_MODEL_GENERIC_PBR;
                 const float2 uvBase = fract(selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet));
                 const float2 uvEmission = fract(selectUvSet(uv0, uv1, uv2, mp.emissionUvSet));
                 const float2 uvNormal = fract(selectUvSet(uv0, uv1, uv2, mp.normalUvSet));
@@ -2386,10 +2470,19 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
 
                 if (mp.specialModel == SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT)
                 {
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_UE_TRAFFIC_LIGHT;
                     const float dirtFactor = computeTrafficLightDirtFactor(mp, uvBase, sceneTextures);
                     const float dirtBlend = mix(1.0f, dirtFactor, 0.35f);
                     baseColor *= dirtBlend;
                     roughness = clamp(mix(roughness, max(mp.specialScalar2, roughness), (1.0f - dirtFactor) * 0.5f), 0.02f, 0.98f);
+                }
+                else if (mp.specialModel == SPECIAL_MATERIAL_UE_HEADLIGHT)
+                {
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_UE_HEADLIGHT;
+                }
+                else if (mp.emissionTexIndex >= 0 || luminance3(emissive) > 1.0e-5f)
+                {
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_GENERIC_EMISSIVE;
                 }
 
                 const float rawNdV = max(dot(NgRaw, safeNormalize(-ray.direction)), 0.0f);
@@ -2398,6 +2491,7 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             else if (materials != nullptr && matId >= 0 && static_cast<uint>(matId) < materialCount)
             {
                 const MaterialGPU m = materials[matId];
+                materialModelDebug = DEBUG_MATERIAL_MODEL_LEGACY_SIMPLE;
                 const float2 uvBase = fract(selectUvSet(uv0, uv1, uv2, m.baseColorUvSet));
                 const float2 uvEmission = fract(selectUvSet(uv0, uv1, uv2, m.emissionUvSet));
                 if (m.baseColorTexIndex >= 0)
@@ -2406,14 +2500,21 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                     baseColor = baseColorFactor * baseColorTexOnly;
                 }
                 if (m.emissionTexIndex >= 0)
+                {
                     emissive *= sampleTextureRGB(m.emissionTexIndex, uvEmission, sceneTextures, float3(1.0f));
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_GENERIC_EMISSIVE;
+                }
             }
 
-            (void)ao;
             emissive *= EMISSION_VISIBLE_EXPOSURE_GPU;
 
             const bool isThinEmissiveSurface =
                 materialHasPBRFlag(matId, MATERIAL_FLAG_THIN_EMISSIVE_SURFACE, materialsPBR, materialPBRCount);
+            if (isThinEmissiveSurface &&
+                materialModelDebug == DEBUG_MATERIAL_MODEL_GENERIC_PBR)
+            {
+                materialModelDebug = DEBUG_MATERIAL_MODEL_THIN_EMISSIVE;
+            }
 
             float3 emitted = emissive;
             if (bounce > 0 && prevWasBsdfSample != 0u && luminance3(emitted) > 1.0e-6f)
@@ -2428,23 +2529,39 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                     emitted *= powerHeuristic(prevBsdfPdf, pdfLight);
             }
 
+            if (bounce == 0 && !isThinEmissiveSurface)
+            {
+                applyProjectedDecalsPrimary(hitPos, Ng, Ns, baseColor, roughness, decals, decalCount, sceneTextures);
+            }
+
+            if (bounce == 0 && s == 0)
+            {
+                result.depth = hit.t;
+                result.albedo = max(baseColor, float3(0.0f));
+                result.normal = safeNormalize(Ns);
+                result.hitMask = 1.0f;
+            }
+
+            if (bounce == 0 && volumeParams.debugView != static_cast<std::uint32_t>(HIPDebugView::Disabled))
+            {
+                radiance += EvaluateDebugView(volumeParams.debugView,
+                                              Ng,
+                                              Ns,
+                                              ao,
+                                              baseColor,
+                                              roughness,
+                                              metallic,
+                                              emissive,
+                                              vertexColorDebug,
+                                              materialModelDebug);
+                break;
+            }
+
             if (isThinEmissiveSurface)
             {
                 radiance += throughput * emitted;
                 ray.origin = hitPos + ray.direction * SHADOW_EPS;
                 continue;
-            }
-
-            if (bounce == 0)
-            {
-                applyProjectedDecalsPrimary(hitPos, Ng, Ns, baseColor, roughness, decals, decalCount, sceneTextures);
-                if (s == 0)
-                {
-                    result.depth = hit.t;
-                    result.albedo = max(baseColor, float3(0.0f));
-                    result.normal = safeNormalize(Ns);
-                    result.hitMask = 1.0f;
-                }
             }
 
             if (dot(Ng, ray.direction) > 0.0f)
@@ -2538,6 +2655,7 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                 break;
 
             throughput *= bsdfSample.weight;
+            throughput *= mix(1.0f, ao, AO_INDIRECT_STRENGTH);
             prevWasBsdfSample = 1u;
             prevBsdfPdf = bsdfSample.pdf;
             prevSurfacePos = hitPos;
@@ -2929,6 +3047,13 @@ namespace
     {
         if (framebuffer == nullptr || hdrInput.empty())
             return;
+
+        if (pp.debugView != static_cast<std::uint32_t>(HIPDebugView::Disabled))
+        {
+            for (std::size_t i = 0; i < hdrInput.size(); ++i)
+                framebuffer[i] = ToVec3(Clamp01Host(hdrInput[i]));
+            return;
+        }
 
         DenoiseImageHost(hdrInput, width, height, g_runtime.denoisedHdr);
         ExtractBloomHost(g_runtime.denoisedHdr, pp, g_runtime.bloomA);

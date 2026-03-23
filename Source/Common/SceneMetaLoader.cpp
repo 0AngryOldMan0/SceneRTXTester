@@ -1935,8 +1935,8 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
 
                 Light l{};
 
-                const std::string typeStr = ReadStringField(jl, "light_type",
-                                              ReadStringField(jl, "type", std::string("point")));
+                const std::string typeStr = ReadStringField(jl, "type",
+                                              ReadStringField(jl, "light_type", std::string("point")));
 
                 if (typeStr == "point")
                     l.type = LightType::Point;
@@ -1950,8 +1950,23 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     l.type = LightType::Point;
 
                 const std::array<float,16> m = ReadMatrix4Field(jl, "transform_matrix");
-                l.position  = MatrixPosition(m);
-                l.direction = NormalizeSafe(MatrixAxisX(m), Vec3{1, 0, 0});
+                const Vec3 matrixPosition  = MatrixPosition(m);
+                const Vec3 matrixDirection = NormalizeSafe(MatrixAxisX(m), Vec3{1, 0, 0});
+                const Vec3 matrixRight     = NormalizeSafe(MatrixAxisY(m), Vec3{0, 1, 0});
+                const Vec3 matrixUp        = NormalizeSafe(MatrixAxisZ(m), Vec3{0, 0, 1});
+
+                l.position = ReadVec3Field(jl, "position", matrixPosition);
+
+                const Vec3 rightExplicit = NormalizeSafe(ReadVec3Field(jl, "right", matrixRight), matrixRight);
+                const Vec3 upExplicit    = NormalizeSafe(ReadVec3Field(jl, "up", matrixUp), matrixUp);
+                const Vec3 basisDirectionRaw = Cross3(rightExplicit, upExplicit);
+                const Vec3 basisDirection = NormalizeSafe(Vec3{
+                    -basisDirectionRaw.x,
+                    -basisDirectionRaw.y,
+                    -basisDirectionRaw.z
+                }, matrixDirection);
+
+                l.direction = NormalizeSafe(ReadVec3Field(jl, "direction", basisDirection), basisDirection);
                 l.color     = ReadVec3Field(jl, "color", Vec3{1, 1, 1});
                 if (ReadBoolFieldLoose(jl, "use_temperature", false))
                 {
@@ -1964,7 +1979,8 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 l.position.z *= unitScale;
 
                 const float rawIntensity = ReadFloatField(jl, "intensity", 1.0f);
-                l.radius    = ReadFloatField(jl, "source_radius", 0.0f) * unitScale;
+                l.radius    = ReadFloatField(jl, "radius",
+                                             ReadFloatField(jl, "source_radius", 0.0f)) * unitScale;
                 l.softSourceRadius = ReadFloatField(jl, "soft_source_radius", 0.0f) * unitScale;
                 l.sourceLength     = ReadFloatField(jl, "source_length", 0.0f) * unitScale;
                 l.castShadows = ReadBoolFieldLoose(jl, "cast_shadows", true);
@@ -1978,13 +1994,31 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 l.areaSizeX = areaSizeX * unitScale;
                 l.areaSizeY = areaSizeY * unitScale;
 
-                const float innerDeg = ReadFloatField(jl, "inner_cone_angle", 0.0f);
-                const float outerDeg = ReadFloatField(jl, "outer_cone_angle", 0.0f);
-                // UE stores cone angles as half-angles from the axis; shader expects full cone.
-                l.spotSize  = (2.0f * outerDeg) * kPI / 180.0f;
-                l.spotBlend = 0.0f;
-                if (outerDeg > 1e-6f && innerDeg >= 0.0f && innerDeg < outerDeg)
-                    l.spotBlend = std::clamp(1.0f - (innerDeg / outerDeg), 0.0f, 1.0f);
+                if (auto itSpotSize = jl.find("spot_size"); itSpotSize != jl.end() && itSpotSize->is_number())
+                {
+                    // SceneRTXSceneExport stores the UE outer half-angle in radians.
+                    // The renderer expects the full cone angle in radians.
+                    l.spotSize = 2.0f * static_cast<float>(itSpotSize->get<double>());
+                }
+                else
+                {
+                    const float outerDeg = ReadFloatField(jl, "outer_cone_angle", 0.0f);
+                    // UE stores cone angles as half-angles from the axis; shader expects full cone.
+                    l.spotSize = (2.0f * outerDeg) * kPI / 180.0f;
+                }
+
+                if (auto itSpotBlend = jl.find("spot_blend"); itSpotBlend != jl.end() && itSpotBlend->is_number())
+                {
+                    l.spotBlend = clamp01(static_cast<float>(itSpotBlend->get<double>()));
+                }
+                else
+                {
+                    const float innerDeg = ReadFloatField(jl, "inner_cone_angle", 0.0f);
+                    const float outerDeg = ReadFloatField(jl, "outer_cone_angle", 0.0f);
+                    l.spotBlend = 0.0f;
+                    if (outerDeg > 1e-6f && innerDeg >= 0.0f && innerDeg < outerDeg)
+                        l.spotBlend = std::clamp(1.0f - (innerDeg / outerDeg), 0.0f, 1.0f);
+                }
 
                 const LightIntensityUnits intensityUnits = ReadLightIntensityUnits(jl);
                 const float worldUnitToMeters = std::max(unitScale * 0.01f, 1.0e-4f);

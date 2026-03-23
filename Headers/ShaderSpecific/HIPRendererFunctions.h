@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Classes/Scene.h"
+#include "ShaderSpecific/HIPRendererInternals.h"
 #include "Structures/BVHNode.h"
 #include "Structures/CameraData.h"
 #include "Structures/Light.h"
@@ -27,6 +28,7 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
                            const std::vector<Light> &lights,
                            std::uint64_t sceneRevision,
                            HIPAccumulationMode accumulationMode,
+                           HIPDebugView debugView,
                            int rootIndex,
                            const CameraDataCPU &cameraCPU,
                            const SceneMetaResources *metaRes,

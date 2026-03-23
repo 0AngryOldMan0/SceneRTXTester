@@ -206,7 +206,8 @@ bool RenderManager::renderFrameTexture(Scene &scene,
                                        const std::string &rendererName,
                                        const std::string &outputPath,
                                        TextureRenderMode mode,
-                                       int baseSamplesPerPixel)
+                                       int baseSamplesPerPixel,
+                                       bool exportHipDebugViews)
 {
     Renderer *renderer = getRenderer(rendererName);
     if (!renderer)
@@ -269,9 +270,11 @@ bool RenderManager::renderFrameTexture(Scene &scene,
         {
             const std::vector<int> sppSchedule = BuildTextureSppSchedule(mode, baseSamplesPerPixel);
             const HIPAccumulationMode previousMode = hip->getAccumulationMode();
+            const HIPDebugView previousDebugView = hip->getDebugView();
             hip->setAccumulationMode(mode == TextureRenderMode::Preview
                                          ? HIPAccumulationMode::PreviewProgressive
                                          : HIPAccumulationMode::FinalStill);
+            hip->setDebugView(HIPDebugView::Disabled);
 
             for (std::size_t i = 0; i < sppSchedule.size(); ++i)
             {
@@ -286,7 +289,44 @@ bool RenderManager::renderFrameTexture(Scene &scene,
                 SaveFrameBufferToPNG(framebuffer, w, h, outPath);
             }
 
+            if (success && exportHipDebugViews)
+            {
+                struct HIPDebugPass
+                {
+                    HIPDebugView view;
+                    const char *suffix;
+                };
+
+                const HIPDebugPass debugPasses[] = {
+                    {HIPDebugView::Ns, "_DebugNs.png"},
+                    {HIPDebugView::AO, "_DebugAO.png"},
+                    {HIPDebugView::NsMinusNg, "_DebugNsMinusNg.png"},
+                    {HIPDebugView::BaseColor, "_DebugBaseColor.png"},
+                    {HIPDebugView::Roughness, "_DebugRoughness.png"},
+                    {HIPDebugView::Metallic, "_DebugMetallic.png"},
+                    {HIPDebugView::Emissive, "_DebugEmissive.png"},
+                    {HIPDebugView::VertexColor, "_DebugVertexColor.png"},
+                    {HIPDebugView::MaterialModel, "_DebugMaterialModel.png"}
+                };
+
+                hip->setAccumulationMode(HIPAccumulationMode::FinalStill);
+                renderer->setSamplesPerPixel(std::clamp(baseSamplesPerPixel, 1, 4));
+
+                for (const HIPDebugPass &pass : debugPasses)
+                {
+                    hip->setDebugView(pass.view);
+                    if (!hip->renderTexture(scene, camera, framebuffer))
+                    {
+                        success = false;
+                        break;
+                    }
+
+                    SaveFrameBufferToPNG(framebuffer, w, h, outputPath + pass.suffix);
+                }
+            }
+
             renderer->setSamplesPerPixel(baseSamplesPerPixel);
+            hip->setDebugView(previousDebugView);
             hip->setAccumulationMode(previousMode);
             handled = true;
         }

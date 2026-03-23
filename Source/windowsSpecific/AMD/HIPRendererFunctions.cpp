@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -42,6 +43,7 @@ namespace
         std::uint64_t generation = 0u;
 
         std::vector<std::string> combinedTexturePaths;
+        std::vector<std::uint32_t> combinedTextureFlags;
         std::vector<HIPTextureDescGPU> textureDescs;
         std::vector<std::uint8_t> textureTexels;
         std::vector<HIPMaterialGPU> materials;
@@ -55,6 +57,7 @@ namespace
             metaRes = nullptr;
             signature = 0u;
             combinedTexturePaths.clear();
+            combinedTextureFlags.clear();
             textureDescs.clear();
             textureTexels.clear();
             materials.clear();
@@ -70,6 +73,7 @@ namespace
     std::uint32_t g_accumulatedSampleCountHost = 0u;
     std::uint32_t g_previewDispatchCountHost = 0u;
     std::uint64_t g_textureProfileCallIndexHost = 0u;
+    std::uint64_t g_materialDebugPrintedGenerationHost = 0u;
 
     using ProfileClock = std::chrono::steady_clock;
 
@@ -79,6 +83,7 @@ namespace
         std::uint32_t accumulatedSamples = 0u;
         std::uint32_t samplesThisDispatch = 0u;
         HIPAccumulationMode accumulationMode = HIPAccumulationMode::PreviewProgressive;
+        HIPDebugView debugView = HIPDebugView::Disabled;
         std::uint32_t prototypeTriangles = 0u;
         std::uint32_t totalInstances = 0u;
         std::uint32_t tlasNodeCount = 0u;
@@ -125,6 +130,12 @@ namespace
 
     HIPTextureProfileTotals g_textureProfileTotalsHost;
 
+    struct HIPTextureIndexMapping
+    {
+        std::vector<std::int32_t> srgbColorToCombined;
+        std::vector<std::int32_t> linearDataToCombined;
+    };
+
     static double ToMilliseconds(ProfileClock::duration duration)
     {
         return std::chrono::duration<double, std::milli>(duration).count();
@@ -135,12 +146,78 @@ namespace
         return static_cast<std::uint32_t>(std::min<std::size_t>(value, UINT32_MAX));
     }
 
+    static std::int32_t MapCombinedTextureIndex(int idx,
+                                                const std::vector<std::int32_t> &semanticMap)
+    {
+        if (idx < 0 || static_cast<std::size_t>(idx) >= semanticMap.size())
+            return -1;
+        return semanticMap[static_cast<std::size_t>(idx)];
+    }
+
+    static HIPTextureIndexMapping BuildCombinedTextureCache(const SceneMetaResources *metaRes)
+    {
+        HIPTextureIndexMapping mapping;
+        if (!metaRes)
+            return mapping;
+
+        const std::size_t srgbColorCount = std::min(metaRes->baseColorTextures.size(),
+                                                    static_cast<std::size_t>(HIP_MAX_SCENE_TEXTURES));
+        const std::size_t remaining = static_cast<std::size_t>(HIP_MAX_SCENE_TEXTURES) - srgbColorCount;
+        const std::size_t linearDataCount = std::min(metaRes->linearTextures.size(), remaining);
+
+        mapping.srgbColorToCombined.resize(srgbColorCount, -1);
+        mapping.linearDataToCombined.resize(linearDataCount, -1);
+
+        g_metaCache.combinedTexturePaths.reserve(srgbColorCount + linearDataCount);
+        g_metaCache.combinedTextureFlags.reserve(srgbColorCount + linearDataCount);
+
+        const auto appendTexture = [&](const std::string &path, std::uint32_t flags) -> std::int32_t
+        {
+            const std::int32_t combinedIndex = static_cast<std::int32_t>(g_metaCache.combinedTexturePaths.size());
+            g_metaCache.combinedTexturePaths.push_back(path);
+            g_metaCache.combinedTextureFlags.push_back(flags);
+            return combinedIndex;
+        };
+
+        for (std::size_t i = 0; i < srgbColorCount; ++i)
+        {
+            mapping.srgbColorToCombined[i] =
+                appendTexture(metaRes->baseColorTextures[i], HIP_TEXTURE_FLAG_SRGB);
+        }
+
+        for (std::size_t i = 0; i < linearDataCount; ++i)
+        {
+            mapping.linearDataToCombined[i] =
+                appendTexture(metaRes->linearTextures[i], 0u);
+        }
+
+        return mapping;
+    }
+
     static const char *AccumulationModeName(HIPAccumulationMode mode)
     {
         switch (mode)
         {
             case HIPAccumulationMode::PreviewProgressive: return "preview_progressive";
             case HIPAccumulationMode::FinalStill:         return "final_still";
+        }
+        return "unknown";
+    }
+
+    static const char *DebugViewName(HIPDebugView view)
+    {
+        switch (view)
+        {
+            case HIPDebugView::Disabled:      return "beauty";
+            case HIPDebugView::Ns:            return "ns";
+            case HIPDebugView::AO:            return "ao";
+            case HIPDebugView::NsMinusNg:     return "ns_minus_ng";
+            case HIPDebugView::BaseColor:     return "base_color";
+            case HIPDebugView::Roughness:     return "roughness";
+            case HIPDebugView::Metallic:      return "metallic";
+            case HIPDebugView::Emissive:      return "emissive";
+            case HIPDebugView::VertexColor:   return "vertex_color";
+            case HIPDebugView::MaterialModel: return "material_model";
         }
         return "unknown";
     }
@@ -191,6 +268,91 @@ namespace
         }
     }
 
+    static std::string ToLowerAscii(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        return value;
+    }
+
+    static bool IsWallMaterialCandidate(const std::string &name)
+    {
+        const std::string lowered = ToLowerAscii(name);
+        return lowered.find("concretewall") != std::string::npos ||
+               lowered.find("concrete_wall") != std::string::npos ||
+               lowered.find("wall") != std::string::npos ||
+               lowered.find("tunnel") != std::string::npos ||
+               lowered.find("subway") != std::string::npos;
+    }
+
+    static void PrintHIPMaterialDebugOnce(const SceneMetaResources *metaRes)
+    {
+        if (!metaRes || g_materialDebugPrintedGenerationHost == g_metaCache.generation)
+            return;
+
+        g_materialDebugPrintedGenerationHost = g_metaCache.generation;
+
+        const std::size_t materialCount = std::min(metaRes->materialsPBR.size(), g_metaCache.materialsPBR.size());
+        std::ostringstream oss;
+        oss << "[HIPMaterialDebug] generation=" << g_metaCache.generation
+            << " pbrSourceCount=" << metaRes->materialsPBR.size()
+            << " pbrCachedCount=" << g_metaCache.materialsPBR.size()
+            << " textureCount=" << g_metaCache.textureDescs.size()
+            << "\n";
+
+        if (materialCount == 0u)
+        {
+            oss << "[HIPMaterialDebug] no PBR materials available\n";
+            AppendProfileText(oss.str());
+            return;
+        }
+
+        std::vector<std::size_t> selected;
+        selected.reserve(6);
+
+        const auto pushUnique = [&](std::size_t index)
+        {
+            if (index >= materialCount)
+                return;
+            if (std::find(selected.begin(), selected.end(), index) == selected.end())
+                selected.push_back(index);
+        };
+
+        for (std::size_t i = 0; i < materialCount && selected.size() < 6u; ++i)
+        {
+            if (IsWallMaterialCandidate(metaRes->materialsPBR[i].name))
+                pushUnique(i);
+        }
+
+        for (std::size_t i = 0; i < materialCount && selected.size() < 6u; ++i)
+        {
+            const SceneMetaMaterial &material = metaRes->materialsPBR[i];
+            if (material.normalTexIndex >= 0 || material.ormTexIndex >= 0 || material.occlusionTexIndex >= 0)
+                pushUnique(i);
+        }
+
+        if (selected.empty())
+            pushUnique(0u);
+
+        for (std::size_t index : selected)
+        {
+            const SceneMetaMaterial &src = metaRes->materialsPBR[index];
+            const HIPMaterialPBRGPU &gpu = g_metaCache.materialsPBR[index];
+            oss << "[HIPMaterialDebug] matId=" << index
+                << " name=\"" << src.name << "\""
+                << " normalTex=" << src.normalTexIndex << "->" << gpu.normalTexIndex
+                << " normalUvSet=" << src.normalUvSet << "->" << gpu.normalUvSet
+                << " ormTex=" << src.ormTexIndex << "->" << gpu.ormTexIndex
+                << " ormUvSet=" << src.ormUvSet << "->" << gpu.ormUvSet
+                << " occlusionTex=" << src.occlusionTexIndex << "->" << gpu.occlusionTexIndex
+                << " occlusionUvSet=" << src.occlusionUvSet << "->" << gpu.occlusionUvSet
+                << " flags=0x" << std::hex << gpu.flags << std::dec
+                << "\n";
+        }
+
+        AppendProfileText(oss.str());
+    }
+
     static void PrintTextureFrameProfile(const HIPTextureFrameProfile &profile)
     {
         auto &totals = g_textureProfileTotalsHost;
@@ -219,6 +381,7 @@ namespace
         std::ostringstream oss;
         oss << "[HIPProfiler][Texture] call=" << profile.callIndex
             << " mode=" << AccumulationModeName(profile.accumulationMode)
+            << " debug=" << DebugViewName(profile.debugView)
             << " accumSamples=" << profile.accumulatedSamples
             << " batchSamples=" << profile.samplesThisDispatch << "\n"
             << "  scene stats:\n";
@@ -721,34 +884,26 @@ namespace
         return out;
     }
 
-    std::vector<HIPDecalGPU> BuildDecalTable(const SceneMetaResources *metaRes)
+    std::vector<HIPDecalGPU> BuildDecalTable(const SceneMetaResources *metaRes,
+                                             const HIPTextureIndexMapping &textureMapping)
     {
         std::vector<HIPDecalGPU> out;
         if (!metaRes || metaRes->decals.empty() || metaRes->materials.empty())
             return out;
 
-        const std::size_t baseCount = std::min(metaRes->baseColorTextures.size(),
-                                               static_cast<std::size_t>(HIP_MAX_SCENE_TEXTURES));
-        const std::size_t remaining = static_cast<std::size_t>(HIP_MAX_SCENE_TEXTURES) - baseCount;
-        const std::size_t linearCount = std::min(metaRes->linearTextures.size(), remaining);
-
-        const auto mapSRGB = [&](int idx) -> std::int32_t
+        const auto mapBaseColorTextureIndex = [&](int idx) -> std::int32_t
         {
-            if (idx < 0 || static_cast<std::size_t>(idx) >= baseCount)
-                return -1;
-            return idx;
+            return MapCombinedTextureIndex(idx, textureMapping.srgbColorToCombined);
         };
 
-        const auto mapLinear = [&](int idx) -> std::int32_t
+        const auto mapLinearDataTextureIndex = [&](int idx) -> std::int32_t
         {
-            if (idx < 0 || static_cast<std::size_t>(idx) >= linearCount)
-                return -1;
-            return static_cast<std::int32_t>(baseCount + static_cast<std::size_t>(idx));
+            return MapCombinedTextureIndex(idx, textureMapping.linearDataToCombined);
         };
 
-        const auto mapAny = [&](int idx, bool isLinear) -> std::int32_t
+        const auto mapDecalAuxTextureIndex = [&](int idx, bool isLinear) -> std::int32_t
         {
-            return isLinear ? mapLinear(idx) : mapSRGB(idx);
+            return isLinear ? mapLinearDataTextureIndex(idx) : mapBaseColorTextureIndex(idx);
         };
 
         out.reserve(metaRes->decals.size());
@@ -758,7 +913,7 @@ namespace
                 continue;
 
             const SceneMetaMaterial &material = metaRes->materials[static_cast<std::size_t>(src.materialIndex)];
-            const std::int32_t baseTex = mapSRGB(material.baseColorTexIndex);
+            const std::int32_t baseTex = mapBaseColorTextureIndex(material.baseColorTexIndex);
             if (baseTex < 0)
                 continue;
 
@@ -780,11 +935,11 @@ namespace
             decal.axisZz = src.axisZ.z;
             decal.opacity = std::clamp(material.opacity * 1.30f, 0.0f, 2.0f);
             decal.baseColorTexIndex = baseTex;
-            decal.ormTexIndex = mapLinear(material.ormTexIndex);
-            decal.roughnessTexIndex = mapLinear(material.roughnessTexIndex);
-            decal.normalTexIndex = mapLinear(material.normalTexIndex);
-            decal.opacityTexIndex = mapAny(material.decalOpacityTexIndex, material.decalOpacityTexIsLinear);
-            decal.detailTexIndex = mapAny(material.decalDetailTexIndex, material.decalDetailTexIsLinear);
+            decal.ormTexIndex = mapLinearDataTextureIndex(material.ormTexIndex);
+            decal.roughnessTexIndex = mapLinearDataTextureIndex(material.roughnessTexIndex);
+            decal.normalTexIndex = mapLinearDataTextureIndex(material.normalTexIndex);
+            decal.opacityTexIndex = mapDecalAuxTextureIndex(material.decalOpacityTexIndex, material.decalOpacityTexIsLinear);
+            decal.detailTexIndex = mapDecalAuxTextureIndex(material.decalDetailTexIndex, material.decalDetailTexIsLinear);
             decal.baseColorX = material.baseColor.x;
             decal.baseColorY = material.baseColor.y;
             decal.baseColorZ = material.baseColor.z;
@@ -804,7 +959,8 @@ namespace
                                                 int width,
                                                 int height,
                                                 std::uint32_t previewDispatchCount,
-                                                HIPAccumulationMode accumulationMode)
+                                                HIPAccumulationMode accumulationMode,
+                                                HIPDebugView debugView)
     {
         HIPPostProcessParams pp{};
         pp.exposure = 1.05f;
@@ -870,6 +1026,7 @@ namespace
                     : static_cast<float>(previewDispatchCount) * (1.0f / 60.0f);
         pp.width = static_cast<float>(width);
         pp.height = static_cast<float>(height);
+        pp.debugView = static_cast<std::uint32_t>(debugView);
         return pp;
     }
 
@@ -1016,7 +1173,8 @@ namespace
                                                std::uint64_t sceneRevision,
                                                const std::vector<Light> &lights,
                                                const SceneMetaResources *metaRes,
-                                               HIPAccumulationMode accumulationMode)
+                                               HIPAccumulationMode accumulationMode,
+                                               HIPDebugView debugView)
     {
         HashBuilder64 hash;
         HashCameraForAccumulation(hash, cameraCPU);
@@ -1024,6 +1182,7 @@ namespace
         hash.addI32(height);
         hash.addU64(sceneRevision);
         hash.addU32(static_cast<std::uint32_t>(accumulationMode));
+        hash.addU32(static_cast<std::uint32_t>(debugView));
 
         hash.addU64(static_cast<std::uint64_t>(lights.size()));
         for (const Light &light : lights)
@@ -1086,26 +1245,14 @@ namespace
         if (!metaRes)
             return true;
 
-        const std::size_t baseCount = std::min(metaRes->baseColorTextures.size(),
-                                               static_cast<std::size_t>(HIP_MAX_SCENE_TEXTURES));
-        const std::size_t remaining = static_cast<std::size_t>(HIP_MAX_SCENE_TEXTURES) - baseCount;
-        const std::size_t linearCount = std::min(metaRes->linearTextures.size(), remaining);
-
-        g_metaCache.combinedTexturePaths.reserve(baseCount + linearCount);
-        g_metaCache.combinedTexturePaths.insert(g_metaCache.combinedTexturePaths.end(),
-                                               metaRes->baseColorTextures.begin(),
-                                               metaRes->baseColorTextures.begin() + static_cast<std::ptrdiff_t>(baseCount));
-        g_metaCache.combinedTexturePaths.insert(g_metaCache.combinedTexturePaths.end(),
-                                               metaRes->linearTextures.begin(),
-                                               metaRes->linearTextures.begin() + static_cast<std::ptrdiff_t>(linearCount));
+        const HIPTextureIndexMapping textureMapping = BuildCombinedTextureCache(metaRes);
 
         g_metaCache.textureDescs.reserve(g_metaCache.combinedTexturePaths.size());
 
         for (std::size_t i = 0; i < g_metaCache.combinedTexturePaths.size(); ++i)
         {
-            const bool isSRGB = (i < baseCount);
             HIPTextureDescGPU desc{};
-            desc.flags = isSRGB ? HIP_TEXTURE_FLAG_SRGB : 0u;
+            desc.flags = (i < g_metaCache.combinedTextureFlags.size()) ? g_metaCache.combinedTextureFlags[i] : 0u;
             desc.texelOffset = static_cast<std::uint64_t>(g_metaCache.textureTexels.size());
 
             const std::string &path = g_metaCache.combinedTexturePaths[i];
@@ -1136,54 +1283,93 @@ namespace
             g_metaCache.textureDescs.push_back(desc);
         }
 
-        const auto mapLinear = [&](int idx) -> std::int32_t
+        const auto mapBaseColorTextureIndex = [&](int idx) -> std::int32_t
         {
-            if (idx < 0 || static_cast<std::size_t>(idx) >= linearCount)
-                return -1;
-            return static_cast<std::int32_t>(baseCount + static_cast<std::size_t>(idx));
+            return MapCombinedTextureIndex(idx, textureMapping.srgbColorToCombined);
         };
 
-        const auto mapSceneTex = [&](int idx, bool isLinear) -> std::int32_t
+        const auto mapEmissionTextureIndex = [&](int idx) -> std::int32_t
         {
-            if (idx < 0)
-                return -1;
-            if (!isLinear)
-            {
-                if (static_cast<std::size_t>(idx) >= baseCount)
-                    return -1;
-                return idx;
-            }
-            return mapLinear(idx);
+            return MapCombinedTextureIndex(idx, textureMapping.srgbColorToCombined);
         };
 
-        g_metaCache.materials.resize(std::max<std::size_t>(metaRes->materials.size(), 1u));
-        g_metaCache.materialsPBR.resize(std::max<std::size_t>(metaRes->materials.size(), 1u));
+        const auto mapNormalTextureIndex = [&](int idx) -> std::int32_t
+        {
+            return MapCombinedTextureIndex(idx, textureMapping.linearDataToCombined);
+        };
 
-        for (std::size_t i = 0; i < metaRes->materials.size(); ++i)
+        const auto mapOrmTextureIndex = [&](int idx) -> std::int32_t
+        {
+            return MapCombinedTextureIndex(idx, textureMapping.linearDataToCombined);
+        };
+
+        const auto mapRoughnessTextureIndex = [&](int idx) -> std::int32_t
+        {
+            return MapCombinedTextureIndex(idx, textureMapping.linearDataToCombined);
+        };
+
+        const auto mapMetallicTextureIndex = [&](int idx) -> std::int32_t
+        {
+            return MapCombinedTextureIndex(idx, textureMapping.linearDataToCombined);
+        };
+
+        const auto mapOcclusionTextureIndex = [&](int idx) -> std::int32_t
+        {
+            return MapCombinedTextureIndex(idx, textureMapping.linearDataToCombined);
+        };
+
+        const auto mapSpecialColorTextureIndex = [&](int idx) -> std::int32_t
+        {
+            return MapCombinedTextureIndex(idx, textureMapping.srgbColorToCombined);
+        };
+
+        const std::size_t materialCount = metaRes->materials.size();
+        const std::size_t materialPBRSourceCount =
+            metaRes->materialsPBR.empty() ? metaRes->materials.size() : metaRes->materialsPBR.size();
+        const std::size_t materialPBRCount = std::max(materialCount, materialPBRSourceCount);
+
+        if (!metaRes->materialsPBR.empty() && metaRes->materialsPBR.size() != metaRes->materials.size())
+        {
+            std::cerr << "HIPRenderer: materialsPBR count (" << metaRes->materialsPBR.size()
+                      << ") differs from materials count (" << metaRes->materials.size()
+                      << "); missing PBR entries will fall back to the base material table\n";
+        }
+
+        g_metaCache.materials.resize(std::max(materialCount, std::size_t{1}));
+        g_metaCache.materialsPBR.resize(std::max(materialPBRCount, std::size_t{1}));
+
+        for (std::size_t i = 0; i < materialCount; ++i)
         {
             const SceneMetaMaterial &material = metaRes->materials[i];
 
             HIPMaterialGPU simpleMat{};
-            simpleMat.baseColorTexIndex =
-                (material.baseColorTexIndex >= 0 && static_cast<std::size_t>(material.baseColorTexIndex) < baseCount)
-                    ? material.baseColorTexIndex
-                    : -1;
-            simpleMat.emissionTexIndex =
-                (material.emissionTexIndex >= 0 && static_cast<std::size_t>(material.emissionTexIndex) < baseCount)
-                    ? material.emissionTexIndex
-                    : -1;
+            simpleMat.baseColorTexIndex = mapBaseColorTextureIndex(material.baseColorTexIndex);
+            simpleMat.emissionTexIndex = mapEmissionTextureIndex(material.emissionTexIndex);
             simpleMat.baseColorUvSet = std::clamp(material.baseColorUvSet, 0, 2);
             simpleMat.emissionUvSet = std::clamp(material.emissionUvSet, 0, 2);
             g_metaCache.materials[i] = simpleMat;
+        }
+
+        for (std::size_t i = 0; i < materialPBRCount; ++i)
+        {
+            const SceneMetaMaterial *materialPtr = nullptr;
+            SceneMetaMaterial defaultMaterial{};
+            if (i < metaRes->materialsPBR.size())
+                materialPtr = &metaRes->materialsPBR[i];
+            else if (i < metaRes->materials.size())
+                materialPtr = &metaRes->materials[i];
+            else
+                materialPtr = &defaultMaterial;
+            const SceneMetaMaterial &material = *materialPtr;
 
             HIPMaterialPBRGPU pbr{};
-            pbr.baseColorTexIndex = simpleMat.baseColorTexIndex;
-            pbr.emissionTexIndex = simpleMat.emissionTexIndex;
-            pbr.normalTexIndex = mapLinear(material.normalTexIndex);
-            pbr.ormTexIndex = mapLinear(material.ormTexIndex);
-            pbr.roughnessTexIndex = mapLinear(material.roughnessTexIndex);
-            pbr.metallicTexIndex = mapLinear(material.metallicTexIndex);
-            pbr.occlusionTexIndex = mapLinear(material.occlusionTexIndex);
+            pbr.baseColorTexIndex = mapBaseColorTextureIndex(material.baseColorTexIndex);
+            pbr.emissionTexIndex = mapEmissionTextureIndex(material.emissionTexIndex);
+            pbr.normalTexIndex = mapNormalTextureIndex(material.normalTexIndex);
+            pbr.ormTexIndex = mapOrmTextureIndex(material.ormTexIndex);
+            pbr.roughnessTexIndex = mapRoughnessTextureIndex(material.roughnessTexIndex);
+            pbr.metallicTexIndex = mapMetallicTextureIndex(material.metallicTexIndex);
+            pbr.occlusionTexIndex = mapOcclusionTextureIndex(material.occlusionTexIndex);
             pbr.baseColorUvSet = std::clamp(material.baseColorUvSet, 0, 2);
             pbr.emissionUvSet = std::clamp(material.emissionUvSet, 0, 2);
             pbr.normalUvSet = std::clamp(material.normalUvSet, 0, 2);
@@ -1192,8 +1378,8 @@ namespace
             pbr.metallicUvSet = std::clamp(material.metallicUvSet, 0, 2);
             pbr.occlusionUvSet = std::clamp(material.occlusionUvSet, 0, 2);
             pbr.specialModel = material.specialModel;
-            pbr.specialTex0Index = mapSceneTex(material.specialTex0Index, false);
-            pbr.specialTex1Index = mapSceneTex(material.specialTex1Index, false);
+            pbr.specialTex0Index = mapSpecialColorTextureIndex(material.specialTex0Index);
+            pbr.specialTex1Index = mapSpecialColorTextureIndex(material.specialTex1Index);
             pbr.specialScalar0 = material.specialScalar0;
             pbr.specialScalar1 = material.specialScalar1;
             pbr.specialScalar2 = material.specialScalar2;
@@ -1207,7 +1393,7 @@ namespace
             g_metaCache.materialsPBR[i] = pbr;
         }
 
-        g_metaCache.decals = BuildDecalTable(metaRes);
+        g_metaCache.decals = BuildDecalTable(metaRes, textureMapping);
         g_metaCache.airDustVolumes = BuildAirDustVolumeTable(metaRes);
 
         return true;
@@ -1231,6 +1417,7 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
                            const std::vector<Light> &lights,
                            std::uint64_t sceneRevision,
                            HIPAccumulationMode accumulationMode,
+                           HIPDebugView debugView,
                            int rootIndex,
                            const CameraDataCPU &cameraCPU,
                            const SceneMetaResources *metaRes,
@@ -1244,6 +1431,7 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
     (void)lights;
     (void)sceneRevision;
     (void)accumulationMode;
+    (void)debugView;
     (void)rootIndex;
     (void)cameraCPU;
     (void)metaRes;
@@ -1271,6 +1459,7 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
     profile.samplesThisDispatch =
         static_cast<std::uint32_t>(std::max(cameraCPU.samplesPerPixel, 1));
     profile.accumulationMode = accumulationMode;
+    profile.debugView = debugView;
     profile.prototypeTriangles = ToU32Count(tris.size());
     profile.totalInstances = ToU32Count(instances.size());
     profile.tlasNodeCount = ToU32Count(tlasNodes.size());
@@ -1285,11 +1474,12 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
         return false;
     }
     profile.ensureMetaMs = ToMilliseconds(ProfileClock::now() - metaStart);
-    profile.materialCount = metaRes ? ToU32Count(metaRes->materials.size()) : 0u;
-    profile.materialPBRCount = metaRes ? ToU32Count(metaRes->materialsPBR.size()) : 0u;
+    profile.materialCount = ToU32Count(g_metaCache.materials.size());
+    profile.materialPBRCount = ToU32Count(g_metaCache.materialsPBR.size());
     profile.textureCount = ToU32Count(g_metaCache.textureDescs.size());
     profile.decalCount = ToU32Count(g_metaCache.decals.size());
     profile.airDustVolumeCount = ToU32Count(g_metaCache.airDustVolumes.size());
+    PrintHIPMaterialDebugOnce(metaRes);
 
     const auto accumStateStart = ProfileClock::now();
     const std::uint64_t accumulationHash =
@@ -1299,7 +1489,8 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
                                      sceneRevision,
                                      lights,
                                      metaRes,
-                                     accumulationMode);
+                                     accumulationMode,
+                                     debugView);
 
     if (accumulationHash != g_accumulationStateHashHost)
     {
@@ -1336,7 +1527,8 @@ bool RenderFrameHIPTexture(const std::vector<BVHNode> &tlasNodes,
                                cameraCPU.width,
                                cameraCPU.height,
                                g_previewDispatchCountHost,
-                               accumulationMode);
+                               accumulationMode,
+                               debugView);
     profile.postParamsMs = ToMilliseconds(ProfileClock::now() - postParamsStart);
 
     const auto hipCoreStart = ProfileClock::now();

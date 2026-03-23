@@ -99,11 +99,12 @@ namespace
     {
         std::cerr
             << "Usage:\n"
-            << "  " << exe << " <scene_path.(obj/json)> [-preview] [-progressive] [meta.json] [width height] [spp]\n\n"
+            << "  " << exe << " <scene_path.(obj/json)> [-preview] [-progressive] [-hip-debug] [meta.json] [width height] [spp]\n\n"
             << "Examples:\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/Subway.obj Scene/UE5/SubwayTonnel/Subway_meta.json 1920 1080 10\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json 1920 1080 10\n"
-            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -preview\n";
+            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -preview\n"
+            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -hip-debug\n";
     }
 
     static int PromptCameraSelection(const std::vector<SceneMetaCameraInfo> &metaCameras)
@@ -223,6 +224,7 @@ int main(int argc, char **argv)
     const fs::path scenePath = fs::path(argv[1]);
 
     TextureRenderMode renderMode = TextureRenderMode::Progressive;
+    bool exportHipDebugViews = false;
     std::vector<std::string> positionalArgs;
     positionalArgs.reserve((argc > 2) ? static_cast<std::size_t>(argc - 2) : 0u);
 
@@ -237,6 +239,11 @@ int main(int argc, char **argv)
         if (arg == "-progressive" || arg == "--progressive")
         {
             renderMode = TextureRenderMode::Progressive;
+            continue;
+        }
+        if (arg == "-hip-debug" || arg == "--hip-debug" || arg == "--hip-debug-all")
+        {
+            exportHipDebugViews = true;
             continue;
         }
         if (!arg.empty() && arg[0] == '-')
@@ -429,7 +436,8 @@ int main(int argc, char **argv)
                                                 rendererName,
                                                 base.string(),
                                                 renderMode,
-                                                samplesPerPixel);
+                                                samplesPerPixel,
+                                                exportHipDebugViews);
                 std::cout << "Frames for camera: <" << ci << "> generated successfully\n";
             }
         }
@@ -441,7 +449,8 @@ int main(int argc, char **argv)
                                             rendererName,
                                             base.string(),
                                             renderMode,
-                                            samplesPerPixel);
+                                            samplesPerPixel,
+                                            exportHipDebugViews);
             std::cout << "Frames for default camera generated successfully\n";
         }
 

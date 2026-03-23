@@ -23,6 +23,8 @@ public:
     void setMetaResources(const SceneMetaResources *metaRes);
     void setAccumulationMode(HIPAccumulationMode mode);
     HIPAccumulationMode getAccumulationMode() const { return accumulationMode_; }
+    void setDebugView(HIPDebugView view);
+    HIPDebugView getDebugView() const { return debugView_; }
 
     bool preloadSceneResources();
     bool renderTexture(const Scene &scene,
@@ -34,6 +36,7 @@ public:
 private:
     const SceneMetaResources *m_metaRes = nullptr;
     HIPAccumulationMode accumulationMode_ = HIPAccumulationMode::PreviewProgressive;
+    HIPDebugView debugView_ = HIPDebugView::Disabled;
 
     CameraDataCPU prepareCameraData(const Camera &camera) const;
 };

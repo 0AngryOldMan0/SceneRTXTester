@@ -24,6 +24,24 @@ You can force a backend explicitly:
 .\run.ps1 Scene/UE5/SubwayTonnel/scene.json 1920 1080 10
 ```
 
+For HIP material/debug inspection, add `-hip-debug` to the app arguments:
+
+```powershell
+.\run.ps1 Scene/UE5/SubwayTonnel/scene.json -Backend hip -preview -hip-debug
+```
+
+This keeps the beauty output and also saves:
+
+- `..._DebugNs.png`
+- `..._DebugAO.png`
+- `..._DebugNsMinusNg.png`
+- `..._DebugBaseColor.png`
+- `..._DebugRoughness.png`
+- `..._DebugMetallic.png`
+- `..._DebugEmissive.png`
+- `..._DebugVertexColor.png`
+- `..._DebugMaterialModel.png`
+
 The build now also copies the executable to the stable legacy path:
 
 - Windows: `.\build\SceneRTXTester.exe`

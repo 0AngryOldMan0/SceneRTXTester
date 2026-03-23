@@ -78,6 +78,15 @@ void HIPRenderer::setAccumulationMode(HIPAccumulationMode mode)
     resetAccumulation();
 }
 
+void HIPRenderer::setDebugView(HIPDebugView view)
+{
+    if (debugView_ == view)
+        return;
+
+    debugView_ = view;
+    resetAccumulation();
+}
+
 bool HIPRenderer::initialize()
 {
     return InitHIPRenderer();
@@ -150,6 +159,7 @@ bool HIPRenderer::renderTexture(const Scene &scene,
                                                scene.getLights(),
                                                scene.getSceneRevision(),
                                                accumulationMode_,
+                                               debugView_,
                                                scene.getGlobalRootIndex(),
                                                camData,
                                                m_metaRes,
