@@ -1501,17 +1501,11 @@ __device__ static inline void EvaluateTunnelFloorMaterial(const MaterialGPU_PBR 
     const float puddleMaskTex = clamp01(sampleTextureR(mp.tunnelFloor.puddlesMaskTexIndex, uvPuddles, sceneTextures, 0.0f));
 
     const float dirtVertexRaw = max(vertexColor.x, max(vertexColor.y, vertexColor.z));
-    const float dirtVertexMask =
-        (dirtVertexRaw > 1.0e-4f)
-            ? clamp01(dirtVertexRaw * max(mp.tunnelFloor.dirtVertexColorMulti, 0.0f))
-            : 1.0f;
+    const float dirtVertexMask = clamp01(dirtVertexRaw * max(mp.tunnelFloor.dirtVertexColorMulti, 0.0f));
     const float dirtSharpness = max(0.25f, 1.0f + mp.tunnelFloor.dirtBlendSharpness * 4.0f);
     const float dirtMask = powf(max(clamp01(dirtMaskTex * dirtVertexMask), 1.0e-4f), dirtSharpness);
 
-    const float puddleVertexMask =
-        (vertexColor.w > 1.0e-4f)
-            ? clamp01(vertexColor.w * max(mp.tunnelFloor.puddlesVertexColorMulti, 0.0f))
-            : 1.0f;
+    const float puddleVertexMask = clamp01(vertexColor.w * max(mp.tunnelFloor.puddlesVertexColorMulti, 0.0f));
     const float puddleTexMask = clamp01(puddleMaskTex * max(mp.tunnelFloor.puddlesMaskMultiply, 0.0f));
     const float puddlePower = max(mp.tunnelFloor.puddlesMaskPower, 0.25f);
     const float puddleMask = powf(max(clamp01(puddleTexMask * puddleVertexMask), 1.0e-4f), puddlePower);
