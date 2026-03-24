@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Point3D.h"   // Vec3
+#include "Point4D.h"   // Vec4
 
 // Forward declarations to keep this header lightweight.
 class Scene;
@@ -83,11 +84,69 @@ enum class SceneMetaMasterMaterialModel : std::uint32_t
     MM_Black_01a
 };
 
+struct SceneMetaAuxTextureEntry
+{
+    std::string name;
+    std::string sourceRef;
+    std::string textureName;
+    std::string textureAssetPath;
+    std::string resolvedPath;
+    int32_t textureIndex = -1;
+    bool isLinear = false;
+};
+
+struct SceneMetaAuxScalarEntry
+{
+    std::string name;
+    float value = 0.0f;
+};
+
+struct SceneMetaAuxVec4Entry
+{
+    std::string name;
+    Vec4 value{0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+struct SceneMetaTunnelFloorMaterialParams
+{
+    float roughnessValue = 1.0f;
+    float roughnessMulti = 1.0f;
+    float normalFlatness = 0.0f;
+    float aoRoughnessMulti = 1.0f;
+    float puddlesVertexColorMulti = 1.0f;
+    float puddlesBlendSharpness = 0.5f;
+    float puddlesMaskPower = 1.0f;
+    float puddlesMaskMultiply = 1.0f;
+    float dirtBlendSharpness = 0.5f;
+    float dirtVertexColorMulti = 1.0f;
+    float dirtUvScale = 1.0f;
+    int32_t puddlesMixMapUvSet = 0;
+    int32_t dirtMixMapUvSet = 0;
+    int32_t dirtMaskTexIndex = -1;
+    int32_t puddlesMaskTexIndex = -1;
+    int32_t dirtAlbedoTexIndex = -1;
+    int32_t concreteFillAlbedoTexIndex = -1;
+    int32_t concreteFillNormalTexIndex = -1;
+    int32_t dirtNormalTexIndex = -1;
+};
+
+struct SceneMetaTunnelSurfaceMaterialParams
+{
+    float roughness = 0.5f;
+    float roughnessMulti = 1.0f;
+    float roughnessPower = 1.0f;
+    float metalnessValue = 0.0f;
+    float dirtRoughness = 0.9f;
+};
+
 struct SceneMetaMaterial
 {
     std::string name;
     std::string baseMaterialAssetPath;
     SceneMetaMasterMaterialModel masterMaterialModel = SceneMetaMasterMaterialModel::GenericPBR;
+    std::vector<SceneMetaAuxTextureEntry> auxTex;
+    std::vector<SceneMetaAuxScalarEntry> auxScalar;
+    std::vector<SceneMetaAuxVec4Entry> auxVec4;
 
     Vec3  baseColor{1.0f, 1.0f, 1.0f};
     Vec3  emissionColor{0.0f, 0.0f, 0.0f};
@@ -139,6 +198,8 @@ struct SceneMetaMaterial
     int32_t metallicUvSet     = 0;
     int32_t occlusionUvSet    = 0;
 
+    SceneMetaTunnelFloorMaterialParams tunnelFloorParams{};
+    SceneMetaTunnelSurfaceMaterialParams tunnelSurfaceParams{};
     SceneMetaOrmChannels ormChannels{};
 };
 

@@ -124,6 +124,10 @@ constexpr int MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = HIP_MATERIAL_FLAG_EMISSION
 constexpr int MATERIAL_FLAG_THIN_EMISSIVE_SURFACE = HIP_MATERIAL_FLAG_THIN_EMISSIVE_SURFACE;
 constexpr int SPECIAL_MATERIAL_UE_HEADLIGHT = HIP_SPECIAL_MATERIAL_UE_HEADLIGHT;
 constexpr int SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT = HIP_SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT;
+constexpr int MASTER_MATERIAL_GENERIC_PBR = HIP_MASTER_MATERIAL_GENERIC_PBR;
+constexpr int MASTER_MATERIAL_MM_MATERIAL_01A = HIP_MASTER_MATERIAL_MM_MATERIAL_01A;
+constexpr int MASTER_MATERIAL_MM_TUNNEL_FLOOR_01A = HIP_MASTER_MATERIAL_MM_TUNNEL_FLOOR_01A;
+constexpr int MASTER_MATERIAL_MM_TUNNEL_WALL_01A = HIP_MASTER_MATERIAL_MM_TUNNEL_WALL_01A;
 constexpr int DEBUG_MATERIAL_MODEL_NONE = 0;
 constexpr int DEBUG_MATERIAL_MODEL_LEGACY_SIMPLE = 1;
 constexpr int DEBUG_MATERIAL_MODEL_GENERIC_PBR = 2;
@@ -131,6 +135,9 @@ constexpr int DEBUG_MATERIAL_MODEL_THIN_EMISSIVE = 3;
 constexpr int DEBUG_MATERIAL_MODEL_UE_HEADLIGHT = 4;
 constexpr int DEBUG_MATERIAL_MODEL_UE_TRAFFIC_LIGHT = 5;
 constexpr int DEBUG_MATERIAL_MODEL_GENERIC_EMISSIVE = 6;
+constexpr int DEBUG_MATERIAL_MODEL_UE_MM_MATERIAL_01A = 7;
+constexpr int DEBUG_MATERIAL_MODEL_UE_TUNNEL_FLOOR = 8;
+constexpr int DEBUG_MATERIAL_MODEL_UE_TUNNEL_WALL = 9;
 constexpr std::uint32_t INSTANCE_FLAG_CASTS_SHADOW = HIP_INSTANCE_FLAG_CASTS_SHADOW;
 constexpr std::uint32_t LIGHT_FLAG_CASTS_SHADOW = HIP_LIGHT_FLAG_CASTS_SHADOW;
 
@@ -370,6 +377,9 @@ __device__ static inline float3 EncodeMaterialModelDebug(int materialModel)
         case DEBUG_MATERIAL_MODEL_UE_HEADLIGHT:     return float3(0.18f, 1.00f, 1.00f);
         case DEBUG_MATERIAL_MODEL_UE_TRAFFIC_LIGHT: return float3(1.00f, 0.18f, 0.18f);
         case DEBUG_MATERIAL_MODEL_GENERIC_EMISSIVE: return float3(1.00f, 1.00f, 0.18f);
+        case DEBUG_MATERIAL_MODEL_UE_MM_MATERIAL_01A: return float3(0.95f, 0.45f, 0.18f);
+        case DEBUG_MATERIAL_MODEL_UE_TUNNEL_FLOOR:    return float3(0.18f, 0.95f, 0.35f);
+        case DEBUG_MATERIAL_MODEL_UE_TUNNEL_WALL:     return float3(0.95f, 0.18f, 0.80f);
         case DEBUG_MATERIAL_MODEL_NONE:
         default:
             return float3(0.0f);
@@ -897,6 +907,20 @@ __device__ static inline float3 sampledTexelRgb(const SampledTexel &t)
 __device__ static inline float sampledTexelLuminance(const SampledTexel &t)
 {
     return t.x * 0.2126f + t.y * 0.7152f + t.z * 0.0722f;
+}
+
+__device__ static inline float sampledTexelChannel(const SampledTexel &t,
+                                                   std::uint32_t channel,
+                                                   float fallback = 1.0f)
+{
+    switch (channel)
+    {
+        case 0u: return t.x;
+        case 1u: return t.y;
+        case 2u: return t.z;
+        case 3u: return t.w;
+        default: return fallback;
+    }
 }
 
 __device__ static inline float luminance3(float3 c)
@@ -1451,6 +1475,150 @@ __device__ static inline float3 evaluateMaterialEmissionPBR(MaterialGPU_PBR mp,
     }
 
     return emissive;
+}
+
+__device__ static inline void EvaluateTunnelFloorMaterial(const MaterialGPU_PBR &mp,
+                                                          float2 uvBase,
+                                                          float2 uvNormal,
+                                                          float2 uvPuddles,
+                                                          float2 uvDirtMix,
+                                                          float2 uvDirtDetail,
+                                                          float4 vertexColor,
+                                                          float3 shadingNormal,
+                                                          const Triangle *triangles,
+                                                          const SceneInstanceGPU *instances,
+                                                          int instanceIndex,
+                                                          int triIndex,
+                                                          float3 barycentrics,
+                                                          const SceneTextureArray &sceneTextures,
+                                                          float3 &baseColor,
+                                                          float3 &Ns,
+                                                          float &ao,
+                                                          float &roughness,
+                                                          float &metallic)
+{
+    const float dirtMaskTex = clamp01(sampleTextureR(mp.tunnelFloor.dirtMaskTexIndex, uvDirtMix, sceneTextures, 0.0f));
+    const float puddleMaskTex = clamp01(sampleTextureR(mp.tunnelFloor.puddlesMaskTexIndex, uvPuddles, sceneTextures, 0.0f));
+
+    const float dirtVertexRaw = max(vertexColor.x, max(vertexColor.y, vertexColor.z));
+    const float dirtVertexMask =
+        (dirtVertexRaw > 1.0e-4f)
+            ? clamp01(dirtVertexRaw * max(mp.tunnelFloor.dirtVertexColorMulti, 0.0f))
+            : 1.0f;
+    const float dirtSharpness = max(0.25f, 1.0f + mp.tunnelFloor.dirtBlendSharpness * 4.0f);
+    const float dirtMask = powf(max(clamp01(dirtMaskTex * dirtVertexMask), 1.0e-4f), dirtSharpness);
+
+    const float puddleVertexMask =
+        (vertexColor.w > 1.0e-4f)
+            ? clamp01(vertexColor.w * max(mp.tunnelFloor.puddlesVertexColorMulti, 0.0f))
+            : 1.0f;
+    const float puddleTexMask = clamp01(puddleMaskTex * max(mp.tunnelFloor.puddlesMaskMultiply, 0.0f));
+    const float puddlePower = max(mp.tunnelFloor.puddlesMaskPower, 0.25f);
+    const float puddleMask = powf(max(clamp01(puddleTexMask * puddleVertexMask), 1.0e-4f), puddlePower);
+
+    if (mp.tunnelFloor.concreteFillAlbedoTexIndex >= 0)
+    {
+        const float3 fillColor =
+            sampleTextureRGB(mp.tunnelFloor.concreteFillAlbedoTexIndex, uvBase, sceneTextures, baseColor);
+        baseColor = mix(baseColor, fillColor, clamp01(puddleMaskTex * 0.45f));
+    }
+
+    if (mp.tunnelFloor.dirtAlbedoTexIndex >= 0)
+    {
+        const float3 dirtColor =
+            sampleTextureRGB(mp.tunnelFloor.dirtAlbedoTexIndex, uvDirtDetail, sceneTextures, baseColor);
+        baseColor = mix(baseColor, dirtColor, clamp01(dirtMask * 0.65f));
+    }
+
+    baseColor = mix(baseColor, baseColor * 0.82f, clamp01(puddleMask * 0.35f));
+
+    if (mp.tunnelFloor.concreteFillNormalTexIndex >= 0)
+    {
+        const float3 fillNs = sampleNormalMapInstanced(mp.tunnelFloor.concreteFillNormalTexIndex,
+                                                       mp.normalUvSet,
+                                                       uvNormal,
+                                                       shadingNormal,
+                                                       triangles,
+                                                       instances,
+                                                       instanceIndex,
+                                                       triIndex,
+                                                       barycentrics,
+                                                       sceneTextures);
+        Ns = safeNormalize(mix(Ns, fillNs, clamp01(puddleMaskTex * 0.35f)));
+    }
+
+    if (mp.tunnelFloor.dirtNormalTexIndex >= 0)
+    {
+        const float3 dirtNs = sampleNormalMapInstanced(mp.tunnelFloor.dirtNormalTexIndex,
+                                                       mp.normalUvSet,
+                                                       uvDirtDetail,
+                                                       shadingNormal,
+                                                       triangles,
+                                                       instances,
+                                                       instanceIndex,
+                                                       triIndex,
+                                                       barycentrics,
+                                                       sceneTextures);
+        Ns = safeNormalize(mix(Ns, dirtNs, clamp01(dirtMask * 0.45f)));
+    }
+
+    const float flattenAmount = clamp01(mp.tunnelFloor.normalFlatness);
+    if (flattenAmount > 1.0e-4f)
+    {
+        const float flattenWeight = clamp01(flattenAmount * mix(0.45f, 1.0f, puddleMask));
+        Ns = safeNormalize(mix(Ns, shadingNormal, flattenWeight));
+    }
+
+    float tunedRoughness =
+        roughness *
+        max(mp.tunnelFloor.roughnessValue, 0.0f) *
+        max(mp.tunnelFloor.roughnessMulti, 0.0f);
+    tunedRoughness = clamp(tunedRoughness, 0.02f, 0.98f);
+
+    const float aoDrivenBlend = clamp01(1.0f - ao);
+    const float aoDrivenScale = mix(1.0f, max(mp.tunnelFloor.aoRoughnessMulti, 0.0f), aoDrivenBlend);
+    tunedRoughness = clamp(tunedRoughness * aoDrivenScale, 0.02f, 0.98f);
+    tunedRoughness = clamp(mix(tunedRoughness, max(tunedRoughness, 0.82f), clamp01(dirtMask * 0.45f)), 0.02f, 0.98f);
+
+    const float puddleSharpness = max(0.25f, 1.0f + mp.tunnelFloor.puddlesBlendSharpness * 6.0f);
+    const float puddleBlend = powf(max(puddleMask, 1.0e-4f), puddleSharpness);
+
+    roughness = clamp(mix(tunedRoughness, 0.03f, puddleBlend), 0.02f, 0.98f);
+    metallic = clamp01(mix(metallic, 0.0f, puddleBlend));
+    ao = clamp01(mix(ao, ao * 0.88f, clamp01(dirtMask * 0.35f)));
+}
+
+__device__ static inline void EvaluateTunnelWallMaterialCommon(const HIPTunnelSurfaceParamsGPU &params,
+                                                               float dirtStrength,
+                                                               float ao,
+                                                               float &roughness,
+                                                               float &metallic)
+{
+    const float roughnessPower = max(params.roughnessPower, 1.0e-3f);
+    float tunedRoughness = clamp(roughness, 1.0e-3f, 0.98f);
+    tunedRoughness = powf(clamp(tunedRoughness * max(params.roughnessMulti, 0.0f), 1.0e-3f, 1.0f), roughnessPower);
+    tunedRoughness = clamp(tunedRoughness * max(params.roughness, 0.0f), 0.02f, 0.98f);
+
+    const float dirtMask = clamp01((1.0f - ao) * dirtStrength);
+    const float dirtRoughness = clamp(max(params.dirtRoughness, tunedRoughness), 0.02f, 0.98f);
+    roughness = clamp(mix(tunedRoughness, dirtRoughness, dirtMask), 0.02f, 0.98f);
+    metallic = clamp01(max(metallic, params.metalnessValue));
+}
+
+__device__ static inline void EvaluateTunnelWallMaterial(const MaterialGPU_PBR &mp,
+                                                         float ao,
+                                                         float &roughness,
+                                                         float &metallic)
+{
+    EvaluateTunnelWallMaterialCommon(mp.tunnelSurface, 0.50f, ao, roughness, metallic);
+}
+
+__device__ static inline void EvaluateMMMaterial01a(const MaterialGPU_PBR &mp,
+                                                    float ao,
+                                                    float &roughness,
+                                                    float &metallic)
+{
+    EvaluateTunnelWallMaterialCommon(mp.tunnelSurface, 0.80f, ao, roughness, metallic);
 }
 
 __device__ static inline float3 resolveTriangleEmissionTextured(const Triangle *triangles,
@@ -2614,13 +2782,17 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             {
                 const MaterialGPU_PBR mp = materialsPBR[matId];
                 materialModelDebug = DEBUG_MATERIAL_MODEL_GENERIC_PBR;
-                const float2 uvBase = fract(selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet));
+                const float2 rawUvBase = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet);
+                const float2 uvBase = fract(rawUvBase);
                 const float2 uvEmission = fract(selectUvSet(uv0, uv1, uv2, mp.emissionUvSet));
                 const float2 uvNormal = fract(selectUvSet(uv0, uv1, uv2, mp.normalUvSet));
                 const float2 uvOrm = fract(selectUvSet(uv0, uv1, uv2, mp.ormUvSet));
                 const float2 uvRoughness = fract(selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet));
                 const float2 uvMetallic = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet));
                 const float2 uvOcclusion = fract(selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet));
+                const float2 uvDirtMix = fract(selectUvSet(uv0, uv1, uv2, mp.tunnelFloor.dirtMixMapUvSet));
+                const float2 uvPuddles = fract(selectUvSet(uv0, uv1, uv2, mp.tunnelFloor.puddlesMixMapUvSet));
+                const float2 uvDirtDetail = fract(rawUvBase * max(mp.tunnelFloor.dirtUvScale, 1.0e-3f));
 
                 if (mp.baseColorTexIndex >= 0)
                 {
@@ -2629,10 +2801,13 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                 }
                 if (mp.ormTexIndex >= 0)
                 {
-                    const float3 orm = sampleTextureRGB(mp.ormTexIndex, uvOrm, sceneTextures, float3(1.0f));
-                    ao = clamp01(orm.x);
-                    roughness = clamp(orm.y, 0.02f, 0.98f);
-                    metallic = clamp01(orm.z);
+                    const SampledTexel orm = sampleTexture4(mp.ormTexIndex,
+                                                            uvOrm,
+                                                            sceneTextures,
+                                                            SampledTexel(1.0f, 1.0f, 1.0f, 1.0f));
+                    ao = clamp01(sampledTexelChannel(orm, static_cast<std::uint32_t>(mp.ormChannelOcclusion), ao));
+                    roughness = clamp(sampledTexelChannel(orm, static_cast<std::uint32_t>(mp.ormChannelRoughness), roughness), 0.02f, 0.98f);
+                    metallic = clamp01(sampledTexelChannel(orm, static_cast<std::uint32_t>(mp.ormChannelMetallic), metallic));
                 }
                 if (mp.roughnessTexIndex >= 0)
                     roughness = clamp(sampleTextureR(mp.roughnessTexIndex, uvRoughness, sceneTextures, roughness), 0.02f, 0.98f);
@@ -2652,6 +2827,37 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                                                   barycentrics,
                                                   sceneTextures);
 
+                if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_FLOOR_01A)
+                {
+                    EvaluateTunnelFloorMaterial(mp,
+                                                uvBase,
+                                                uvNormal,
+                                                uvPuddles,
+                                                uvDirtMix,
+                                                uvDirtDetail,
+                                                vertexColorDebug,
+                                                N,
+                                                triangles,
+                                                instances,
+                                                hit.instanceIndex,
+                                                hit.triIndex,
+                                                barycentrics,
+                                                sceneTextures,
+                                                baseColor,
+                                                Ns,
+                                                ao,
+                                                roughness,
+                                                metallic);
+                }
+                else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_WALL_01A)
+                {
+                    EvaluateTunnelWallMaterial(mp, ao, roughness, metallic);
+                }
+                else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_MATERIAL_01A)
+                {
+                    EvaluateMMMaterial01a(mp, ao, roughness, metallic);
+                }
+
                 if (mp.specialModel == SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT)
                 {
                     materialModelDebug = DEBUG_MATERIAL_MODEL_UE_TRAFFIC_LIGHT;
@@ -2663,6 +2869,18 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                 else if (mp.specialModel == SPECIAL_MATERIAL_UE_HEADLIGHT)
                 {
                     materialModelDebug = DEBUG_MATERIAL_MODEL_UE_HEADLIGHT;
+                }
+                else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_FLOOR_01A)
+                {
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_UE_TUNNEL_FLOOR;
+                }
+                else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_WALL_01A)
+                {
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_UE_TUNNEL_WALL;
+                }
+                else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_MATERIAL_01A)
+                {
+                    materialModelDebug = DEBUG_MATERIAL_MODEL_UE_MM_MATERIAL_01A;
                 }
                 else if (mp.emissionTexIndex >= 0 || luminance3(emissive) > 1.0e-5f)
                 {

@@ -358,6 +358,14 @@ namespace
             addFloat(v.z);
         }
 
+        void addVec4(const Vec4 &v)
+        {
+            addFloat(v.x);
+            addFloat(v.y);
+            addFloat(v.z);
+            addFloat(v.w);
+        }
+
         void addString(const std::string &s)
         {
             addU64(static_cast<std::uint64_t>(s.size()));
@@ -417,6 +425,29 @@ namespace
         hash.addI32(material.specialModel);
         hash.addI32(material.specialTex0Index);
         hash.addI32(material.specialTex1Index);
+        hash.addU64(static_cast<std::uint64_t>(material.auxTex.size()));
+        for (const SceneMetaAuxTextureEntry &tex : material.auxTex)
+        {
+            hash.addString(tex.name);
+            hash.addString(tex.sourceRef);
+            hash.addString(tex.textureName);
+            hash.addString(tex.textureAssetPath);
+            hash.addString(tex.resolvedPath);
+            hash.addI32(tex.textureIndex);
+            hash.addBool(tex.isLinear);
+        }
+        hash.addU64(static_cast<std::uint64_t>(material.auxScalar.size()));
+        for (const SceneMetaAuxScalarEntry &scalar : material.auxScalar)
+        {
+            hash.addString(scalar.name);
+            hash.addFloat(scalar.value);
+        }
+        hash.addU64(static_cast<std::uint64_t>(material.auxVec4.size()));
+        for (const SceneMetaAuxVec4Entry &vec : material.auxVec4)
+        {
+            hash.addString(vec.name);
+            hash.addVec4(vec.value);
+        }
         hash.addFloat(material.specialScalar0);
         hash.addFloat(material.specialScalar1);
         hash.addFloat(material.specialScalar2);

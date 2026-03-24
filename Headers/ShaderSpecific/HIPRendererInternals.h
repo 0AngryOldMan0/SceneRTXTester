@@ -15,6 +15,10 @@ constexpr int HIP_MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = 1;
 constexpr int HIP_MATERIAL_FLAG_THIN_EMISSIVE_SURFACE = 2;
 constexpr int HIP_SPECIAL_MATERIAL_UE_HEADLIGHT = 1;
 constexpr int HIP_SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT = 2;
+constexpr int HIP_MASTER_MATERIAL_GENERIC_PBR = 0;
+constexpr int HIP_MASTER_MATERIAL_MM_MATERIAL_01A = 1;
+constexpr int HIP_MASTER_MATERIAL_MM_TUNNEL_FLOOR_01A = 3;
+constexpr int HIP_MASTER_MATERIAL_MM_TUNNEL_WALL_01A = 4;
 constexpr std::uint32_t HIP_INSTANCE_FLAG_CASTS_SHADOW = 1u;
 constexpr std::uint32_t HIP_LIGHT_FLAG_CASTS_SHADOW = 1u;
 
@@ -87,6 +91,39 @@ struct HIPMaterialGPU
     std::int32_t emissionUvSet = 0;
 };
 
+struct HIPTunnelFloorParamsGPU
+{
+    float roughnessValue = 1.0f;
+    float roughnessMulti = 1.0f;
+    float normalFlatness = 0.0f;
+    float aoRoughnessMulti = 1.0f;
+    float puddlesVertexColorMulti = 1.0f;
+    float puddlesBlendSharpness = 0.5f;
+    float puddlesMaskPower = 1.0f;
+    float puddlesMaskMultiply = 1.0f;
+    float dirtBlendSharpness = 0.5f;
+    float dirtVertexColorMulti = 1.0f;
+    float dirtUvScale = 1.0f;
+    std::int32_t puddlesMixMapUvSet = 0;
+    std::int32_t dirtMixMapUvSet = 0;
+    std::int32_t dirtMaskTexIndex = -1;
+    std::int32_t puddlesMaskTexIndex = -1;
+    std::int32_t dirtAlbedoTexIndex = -1;
+    std::int32_t concreteFillAlbedoTexIndex = -1;
+    std::int32_t concreteFillNormalTexIndex = -1;
+    std::int32_t dirtNormalTexIndex = -1;
+};
+
+struct HIPTunnelSurfaceParamsGPU
+{
+    float roughness = 0.5f;
+    float roughnessMulti = 1.0f;
+    float roughnessPower = 1.0f;
+    float metalnessValue = 0.0f;
+    float dirtRoughness = 0.9f;
+    float _pad0 = 0.0f;
+};
+
 struct HIPMaterialPBRGPU
 {
     std::int32_t baseColorTexIndex = -1;
@@ -109,7 +146,10 @@ struct HIPMaterialPBRGPU
 
     std::int32_t specialTex0Index = -1;
     std::int32_t specialTex1Index = -1;
-    std::int32_t _pad0 = 0;
+    std::uint8_t ormChannelOcclusion = 0u;
+    std::uint8_t ormChannelRoughness = 1u;
+    std::uint8_t ormChannelMetallic = 2u;
+    std::uint8_t _pad0 = 0u;
     std::int32_t _pad1 = 0;
 
     float specialScalar0 = 0.0f;
@@ -118,8 +158,11 @@ struct HIPMaterialPBRGPU
     float specialScalar3 = 0.0f;
     float specialScalar4 = 0.0f;
     float specialScalar5 = 0.0f;
-    float _pad2 = 0.0f;
-    float _pad3 = 0.0f;
+
+    std::int32_t masterMaterialModel = HIP_MASTER_MATERIAL_GENERIC_PBR;
+    std::int32_t _pad2 = 0;
+    HIPTunnelFloorParamsGPU tunnelFloor{};
+    HIPTunnelSurfaceParamsGPU tunnelSurface{};
 };
 
 struct HIPDecalGPU
@@ -272,7 +315,7 @@ struct HIPTextureExecutionProfile
 static_assert(sizeof(HIPSceneInstanceGPU) == 184, "HIPSceneInstanceGPU size must match SceneInstanceGPU");
 static_assert(sizeof(HIPLightGPU) == 76, "HIPLightGPU size must be 76 bytes");
 static_assert(sizeof(HIPMaterialGPU) == 16, "HIPMaterialGPU size must be 16 bytes");
-static_assert(sizeof(HIPMaterialPBRGPU) == 112, "HIPMaterialPBRGPU size must be 112 bytes");
+static_assert(sizeof(HIPMaterialPBRGPU) == 212, "HIPMaterialPBRGPU size must be 212 bytes");
 static_assert(sizeof(HIPDecalGPU) == 128, "HIPDecalGPU size must be 128 bytes");
 static_assert(sizeof(HIPEmissiveTriangleGPU) == 20, "HIPEmissiveTriangleGPU size must be 20 bytes");
 static_assert(sizeof(HIPAirDustVolumeGPU) == 64, "HIPAirDustVolumeGPU size must be 64 bytes");

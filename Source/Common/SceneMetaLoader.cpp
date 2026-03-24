@@ -102,6 +102,20 @@ namespace
         return v;
     }
 
+    static Vec4 ReadVec4(const json& j, const Vec4& def)
+    {
+        if (!j.is_array() || j.size() < 3)
+            return def;
+
+        Vec4 v = def;
+        v.x = (float)j[0].get<double>();
+        v.y = (float)j[1].get<double>();
+        v.z = (float)j[2].get<double>();
+        if (j.size() >= 4)
+            v.w = (float)j[3].get<double>();
+        return v;
+    }
+
     static Vec3 ReadVec3Field(const json& obj, const char* key, const Vec3& def)
     {
         auto it = obj.find(key);
@@ -249,6 +263,24 @@ namespace
         if (it->is_number())
             return (int32_t)it->get<double>();
         return def;
+    }
+
+    static void SanitizeStandalonePbrTextureOverrides(SceneMetaMaterial& material)
+    {
+        if (material.ormTexIndex < 0)
+            return;
+
+        const auto dropIfAliasedWithPackedSource = [&](int32_t& texIndex)
+        {
+            if (texIndex < 0)
+                return;
+            if (texIndex == material.ormTexIndex || texIndex == material.normalTexIndex)
+                texIndex = -1;
+        };
+
+        dropIfAliasedWithPackedSource(material.roughnessTexIndex);
+        dropIfAliasedWithPackedSource(material.metallicTexIndex);
+        dropIfAliasedWithPackedSource(material.occlusionTexIndex);
     }
 
     static bool ParsePostProcessFromJson(const json& obj, SceneMetaPostProcess& outPP)
@@ -438,6 +470,26 @@ static std::string ToLowerCopy(std::string s)
     return s;
 }
 
+static bool IsTruthyEnvVar(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr)
+        return false;
+
+    std::string lower = ToLowerCopy(value);
+    lower.erase(std::remove_if(lower.begin(), lower.end(),
+        [](unsigned char c) { return std::isspace(c) != 0; }),
+        lower.end());
+
+    if (lower.empty())
+        return false;
+
+    return lower != "0" &&
+           lower != "false" &&
+           lower != "off" &&
+           lower != "no";
+}
+
 static bool ContainsAny(std::string_view s, std::initializer_list<const char*> needles)
 {
     for (const char* n : needles)
@@ -542,6 +594,229 @@ static const char* MasterMaterialModelName(SceneMetaMasterMaterialModel model)
         case SceneMetaMasterMaterialModel::MM_Vent_Offset_01a:          return "MM_Vent_Offset_01a";
         case SceneMetaMasterMaterialModel::MM_Black_01a:                return "MM_Black_01a";
         default:                                                        return "Unknown";
+    }
+}
+
+static void AppendAuxScalarEntries(const json& obj,
+                                   const char* fieldName,
+                                   std::vector<SceneMetaAuxScalarEntry>& out)
+{
+    auto it = obj.find(fieldName);
+    if (it == obj.end() || !it->is_array())
+        return;
+
+    out.reserve(out.size() + it->size());
+    for (const json& p : *it)
+    {
+        if (!p.is_object())
+            continue;
+
+        const std::string name = ReadStringField(p, "name", std::string{});
+        auto itValue = p.find("value");
+        if (name.empty() || itValue == p.end() || !itValue->is_number())
+            continue;
+
+        SceneMetaAuxScalarEntry entry{};
+        entry.name = name;
+        entry.value = (float)itValue->get<double>();
+        out.push_back(std::move(entry));
+    }
+}
+
+static void AppendAuxVec4Entries(const json& obj,
+                                 const char* fieldName,
+                                 std::vector<SceneMetaAuxVec4Entry>& out)
+{
+    auto it = obj.find(fieldName);
+    if (it == obj.end() || !it->is_array())
+        return;
+
+    out.reserve(out.size() + it->size());
+    for (const json& p : *it)
+    {
+        if (!p.is_object())
+            continue;
+
+        const std::string name = ReadStringField(p, "name", std::string{});
+        auto itValue = p.find("value");
+        if (name.empty() || itValue == p.end())
+            continue;
+
+        SceneMetaAuxVec4Entry entry{};
+        entry.name = name;
+        entry.value = ReadVec4(*itValue, Vec4{0.0f, 0.0f, 0.0f, 0.0f});
+        out.push_back(std::move(entry));
+    }
+}
+
+static void AppendSceneExportAuxTextureEntries(
+    const json& obj,
+    std::vector<SceneMetaAuxTextureEntry>& out,
+    const std::unordered_map<std::string, std::string>& texturePathById,
+    const std::unordered_map<std::string, std::string>& textureNameById,
+    const std::unordered_map<std::string, bool>& textureSrgbById)
+{
+    auto it = obj.find("texture_parameters");
+    if (it == obj.end() || !it->is_array())
+        return;
+
+    out.reserve(out.size() + it->size());
+    for (const json& p : *it)
+    {
+        if (!p.is_object())
+            continue;
+
+        SceneMetaAuxTextureEntry entry{};
+        entry.name = ReadStringField(p, "name", std::string{});
+        if (entry.name.empty())
+            continue;
+
+        entry.sourceRef = ReadStringField(p, "texture_id", std::string{});
+        entry.textureName = ReadStringField(p, "texture_name", std::string{});
+        entry.textureAssetPath = ReadStringField(p, "texture_asset_path", std::string{});
+
+        if (!entry.sourceRef.empty())
+        {
+            if (auto itPath = texturePathById.find(entry.sourceRef); itPath != texturePathById.end())
+                entry.resolvedPath = itPath->second;
+            if (entry.textureName.empty())
+            {
+                if (auto itName = textureNameById.find(entry.sourceRef); itName != textureNameById.end())
+                    entry.textureName = itName->second;
+            }
+
+            const auto itSrgb = textureSrgbById.find(entry.sourceRef);
+            const bool isSrgb = (itSrgb != textureSrgbById.end()) ? itSrgb->second : false;
+            entry.isLinear = !isSrgb;
+        }
+
+        out.push_back(std::move(entry));
+    }
+}
+
+static void AppendLegacyAuxTextureEntries(const json& obj,
+                                          const std::filesystem::path& metaDir,
+                                          std::vector<SceneMetaAuxTextureEntry>& out)
+{
+    auto it = obj.find("texture_params");
+    if (it == obj.end() || !it->is_array())
+        return;
+
+    out.reserve(out.size() + it->size());
+    for (const json& p : *it)
+    {
+        if (!p.is_object())
+            continue;
+
+        SceneMetaAuxTextureEntry entry{};
+        entry.name = ReadStringField(p, "name", std::string{});
+        if (entry.name.empty())
+            continue;
+
+        entry.sourceRef = ReadStringField(p, "exported_path", std::string{});
+        entry.textureName = ReadStringField(p, "texture_name", std::string{});
+        entry.textureAssetPath = ReadStringField(p, "texture_asset_path", std::string{});
+        if (entry.textureAssetPath.empty())
+            entry.textureAssetPath = ReadStringField(p, "asset_path", std::string{});
+        entry.resolvedPath = ResolveTexturePath(metaDir, entry.sourceRef);
+        entry.isLinear = !ReadBoolFieldLoose(p, "srgb", false);
+        out.push_back(std::move(entry));
+    }
+}
+
+static void ResolveAuxTextureIndices(
+    std::vector<SceneMetaAuxTextureEntry>& out,
+    const std::unordered_map<std::string, int32_t>& baseColorTexIndexByPath,
+    const std::unordered_map<std::string, int32_t>& linearTexIndexByPath)
+{
+    for (SceneMetaAuxTextureEntry& entry : out)
+    {
+        entry.textureIndex = -1;
+        if (entry.resolvedPath.empty())
+            continue;
+
+        if (entry.isLinear)
+        {
+            if (auto it = linearTexIndexByPath.find(entry.resolvedPath); it != linearTexIndexByPath.end())
+                entry.textureIndex = it->second;
+        }
+        else
+        {
+            if (auto it = baseColorTexIndexByPath.find(entry.resolvedPath); it != baseColorTexIndexByPath.end())
+                entry.textureIndex = it->second;
+        }
+    }
+}
+
+static void AppendFullAuxPayloadFromSceneExport(
+    const json& obj,
+    SceneMetaMaterial& material,
+    const std::unordered_map<std::string, std::string>& texturePathById,
+    const std::unordered_map<std::string, std::string>& textureNameById,
+    const std::unordered_map<std::string, bool>& textureSrgbById)
+{
+    AppendSceneExportAuxTextureEntries(obj, material.auxTex, texturePathById, textureNameById, textureSrgbById);
+    AppendAuxScalarEntries(obj, "scalar_parameters", material.auxScalar);
+    AppendAuxVec4Entries(obj, "vector_parameters", material.auxVec4);
+}
+
+static void AppendFullAuxPayloadFromLegacy(const json& obj,
+                                           const std::filesystem::path& metaDir,
+                                           SceneMetaMaterial& material)
+{
+    AppendLegacyAuxTextureEntries(obj, metaDir, material.auxTex);
+    AppendAuxScalarEntries(obj, "scalar_params", material.auxScalar);
+    AppendAuxVec4Entries(obj, "vector_params", material.auxVec4);
+}
+
+static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>& materials)
+{
+    static const bool dumpEnabled = IsTruthyEnvVar("SCENE_META_DUMP_MATERIAL_PAYLOAD");
+    if (!dumpEnabled)
+        return;
+
+    for (const SceneMetaMaterial& material : materials)
+    {
+        std::cerr
+            << "SceneMetaLoader: material payload name='" << material.name
+            << "' model=" << MasterMaterialModelName(material.masterMaterialModel)
+            << " base='" << material.baseMaterialAssetPath << "'"
+            << " auxTex=" << material.auxTex.size()
+            << " auxScalar=" << material.auxScalar.size()
+            << " auxVec4=" << material.auxVec4.size()
+            << "\n";
+
+        for (const SceneMetaAuxTextureEntry& tex : material.auxTex)
+        {
+            std::cerr
+                << "  auxTex name='" << tex.name
+                << "' source='" << tex.sourceRef
+                << "' path='" << tex.resolvedPath
+                << "' asset='" << tex.textureAssetPath
+                << "' texName='" << tex.textureName
+                << "' index=" << tex.textureIndex
+                << " colorspace=" << (tex.isLinear ? "linear" : "srgb")
+                << "\n";
+        }
+
+        for (const SceneMetaAuxScalarEntry& scalar : material.auxScalar)
+        {
+            std::cerr
+                << "  auxScalar name='" << scalar.name
+                << "' value=" << scalar.value
+                << "\n";
+        }
+
+        for (const SceneMetaAuxVec4Entry& vec : material.auxVec4)
+        {
+            std::cerr
+                << "  auxVec4 name='" << vec.name
+                << "' value=(" << vec.value.x
+                << ", " << vec.value.y
+                << ", " << vec.value.z
+                << ", " << vec.value.w
+                << ")\n";
+        }
     }
 }
 
@@ -718,6 +993,168 @@ static const char* MasterMaterialModelName(SceneMetaMasterMaterialModel model)
         if (value == sentinel)
             return def;
         return ParseSceneUvSetValue(value, def);
+    }
+
+    static void PopulateTunnelMasterMaterialParamsFromSceneExport(const json& obj,
+                                                                  SceneMetaMaterial& material,
+                                                                  int defaultUvSet)
+    {
+        switch (material.masterMaterialModel)
+        {
+            case SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a:
+                material.tunnelFloorParams.roughnessValue =
+                    ReadSceneScalarParam(obj, {"Roughness Value"}, 1.0f);
+                material.tunnelFloorParams.roughnessMulti =
+                    ReadSceneScalarParam(obj, {"Roughness Multi"}, 1.0f);
+                material.tunnelFloorParams.normalFlatness =
+                    ReadSceneScalarParam(obj, {"Normal Flatness"}, 0.0f);
+                material.tunnelFloorParams.aoRoughnessMulti =
+                    ReadSceneScalarParam(obj, {"AO Roughness Mutli"}, 1.0f);
+                material.tunnelFloorParams.puddlesVertexColorMulti =
+                    ReadSceneScalarParam(obj, {"Vertex Color Multi (Puddles)"}, 1.0f);
+                material.tunnelFloorParams.puddlesBlendSharpness =
+                    ReadSceneScalarParam(obj, {"Puddles Blend Sharpness"}, 0.5f);
+                material.tunnelFloorParams.puddlesMaskPower =
+                    ReadSceneScalarParam(obj, {"Power of Mask"}, 1.0f);
+                material.tunnelFloorParams.puddlesMaskMultiply =
+                    ReadSceneScalarParam(obj, {"Mutliply Mask"}, 1.0f);
+                material.tunnelFloorParams.dirtBlendSharpness =
+                    ReadSceneScalarParam(obj, {"Dirt Blend Sharpness"}, 0.5f);
+                material.tunnelFloorParams.dirtVertexColorMulti =
+                    ReadSceneScalarParam(obj, {"Vertex Color Multi"}, 1.0f);
+                material.tunnelFloorParams.dirtUvScale =
+                    ReadSceneScalarParam(obj, {"UV Coord Dirt"}, 1.0f);
+                material.tunnelFloorParams.puddlesMixMapUvSet =
+                    ClampUvSetIndex(ReadSceneUvSetParam(obj, {"Puddles Mix Map Texture Coord"}, defaultUvSet));
+                material.tunnelFloorParams.dirtMixMapUvSet =
+                    ClampUvSetIndex(ReadSceneUvSetParam(obj,
+                                                        {"Dirt Mix Map Texture Coord", "Dirt Mix Mapl Texture Coord"},
+                                                        defaultUvSet));
+                break;
+
+            case SceneMetaMasterMaterialModel::MM_Material_01a:
+            case SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a:
+                material.tunnelSurfaceParams.roughness =
+                    ReadSceneScalarParam(obj, {"Roughness"}, material.roughness);
+                material.tunnelSurfaceParams.roughnessMulti =
+                    ReadSceneScalarParam(obj, {"Roughness Multi"}, 1.0f);
+                material.tunnelSurfaceParams.roughnessPower =
+                    ReadSceneScalarParam(obj, {"Roughness Power"}, 1.0f);
+                material.tunnelSurfaceParams.metalnessValue =
+                    ReadSceneScalarParam(obj, {"Metalness Value", "Metallic Value", "Metalness"}, material.metallic);
+                material.tunnelSurfaceParams.dirtRoughness =
+                    ReadSceneScalarParam(obj, {"Dirt Roughness"}, 0.9f);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    static void PopulateTunnelMasterMaterialParamsFromLegacy(const json& obj,
+                                                             SceneMetaMaterial& material,
+                                                             int defaultUvSet)
+    {
+        switch (material.masterMaterialModel)
+        {
+            case SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a:
+                material.tunnelFloorParams.roughnessValue =
+                    ReadNamedScalarParam(obj, "Roughness Value", 1.0f);
+                material.tunnelFloorParams.roughnessMulti =
+                    ReadNamedScalarParam(obj, "Roughness Multi", 1.0f);
+                material.tunnelFloorParams.normalFlatness =
+                    ReadNamedScalarParam(obj, "Normal Flatness", 0.0f);
+                material.tunnelFloorParams.aoRoughnessMulti =
+                    ReadNamedScalarParam(obj, "AO Roughness Mutli", 1.0f);
+                material.tunnelFloorParams.puddlesVertexColorMulti =
+                    ReadNamedScalarParam(obj, "Vertex Color Multi (Puddles)", 1.0f);
+                material.tunnelFloorParams.puddlesBlendSharpness =
+                    ReadNamedScalarParam(obj, "Puddles Blend Sharpness", 0.5f);
+                material.tunnelFloorParams.puddlesMaskPower =
+                    ReadNamedScalarParam(obj, "Power of Mask", 1.0f);
+                material.tunnelFloorParams.puddlesMaskMultiply =
+                    ReadNamedScalarParam(obj, "Mutliply Mask", 1.0f);
+                material.tunnelFloorParams.dirtBlendSharpness =
+                    ReadNamedScalarParam(obj, "Dirt Blend Sharpness", 0.5f);
+                material.tunnelFloorParams.dirtVertexColorMulti =
+                    ReadNamedScalarParam(obj, "Vertex Color Multi", 1.0f);
+                material.tunnelFloorParams.dirtUvScale =
+                    ReadNamedScalarParam(obj, "UV Coord Dirt", 1.0f);
+                material.tunnelFloorParams.puddlesMixMapUvSet =
+                    ClampUvSetIndex(ParseSceneUvSetValue(
+                        ReadNamedScalarParam(obj, "Puddles Mix Map Texture Coord", static_cast<float>(defaultUvSet)),
+                        defaultUvSet));
+                material.tunnelFloorParams.dirtMixMapUvSet =
+                    ClampUvSetIndex(ParseSceneUvSetValue(
+                        ReadNamedScalarParam(obj, "Dirt Mix Map Texture Coord",
+                                             ReadNamedScalarParam(obj, "Dirt Mix Mapl Texture Coord",
+                                                                  static_cast<float>(defaultUvSet))),
+                        defaultUvSet));
+                break;
+
+            case SceneMetaMasterMaterialModel::MM_Material_01a:
+            case SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a:
+                material.tunnelSurfaceParams.roughness =
+                    ReadNamedScalarParam(obj, "Roughness", material.roughness);
+                material.tunnelSurfaceParams.roughnessMulti =
+                    ReadNamedScalarParam(obj, "Roughness Multi", 1.0f);
+                material.tunnelSurfaceParams.roughnessPower =
+                    ReadNamedScalarParam(obj, "Roughness Power", 1.0f);
+                material.tunnelSurfaceParams.metalnessValue =
+                    ReadNamedScalarParam(obj, "Metalness Value", material.metallic);
+                material.tunnelSurfaceParams.dirtRoughness =
+                    ReadNamedScalarParam(obj, "Dirt Roughness", 0.9f);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    template <typename AddSrgbTexFn, typename AddLinearTexFn>
+    static void PopulateTunnelMasterMaterialTexturesFromSceneExport(const json& obj,
+                                                                    SceneMetaMaterial& material,
+                                                                    AddSrgbTexFn&& addSrgbTexById,
+                                                                    AddLinearTexFn&& addLinearTexById)
+    {
+        if (material.masterMaterialModel != SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a)
+            return;
+
+        material.tunnelFloorParams.concreteFillNormalTexIndex =
+            addLinearTexById(ReadSceneTextureParamId(obj, {"USED_000"}));
+        material.tunnelFloorParams.dirtNormalTexIndex =
+            addLinearTexById(ReadSceneTextureParamId(obj, {"USED_002"}));
+        material.tunnelFloorParams.dirtMaskTexIndex =
+            addLinearTexById(ReadSceneTextureParamId(obj, {"USED_003"}));
+        material.tunnelFloorParams.puddlesMaskTexIndex =
+            addLinearTexById(ReadSceneTextureParamId(obj, {"USED_004"}));
+        material.tunnelFloorParams.dirtAlbedoTexIndex =
+            addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_006"}));
+        material.tunnelFloorParams.concreteFillAlbedoTexIndex =
+            addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_007"}));
+    }
+
+    template <typename AddSrgbTexFn, typename AddLinearTexFn>
+    static void PopulateTunnelMasterMaterialTexturesFromLegacy(const json& obj,
+                                                               SceneMetaMaterial& material,
+                                                               AddSrgbTexFn&& addSrgbTex,
+                                                               AddLinearTexFn&& addLinearTex)
+    {
+        if (material.masterMaterialModel != SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a)
+            return;
+
+        material.tunnelFloorParams.concreteFillNormalTexIndex =
+            addLinearTex(ReadTextureParamExportedPath(obj, {"USED_000"}));
+        material.tunnelFloorParams.dirtNormalTexIndex =
+            addLinearTex(ReadTextureParamExportedPath(obj, {"USED_002"}));
+        material.tunnelFloorParams.dirtMaskTexIndex =
+            addLinearTex(ReadTextureParamExportedPath(obj, {"USED_003"}));
+        material.tunnelFloorParams.puddlesMaskTexIndex =
+            addLinearTex(ReadTextureParamExportedPath(obj, {"USED_004"}));
+        material.tunnelFloorParams.dirtAlbedoTexIndex =
+            addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_006"}));
+        material.tunnelFloorParams.concreteFillAlbedoTexIndex =
+            addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_007"}));
     }
 
     static float Saturate(float x)
@@ -1671,6 +2108,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                               << "' for material '" << m.name
                               << "' (resolved model: " << MasterMaterialModelName(m.masterMaterialModel) << ")\n";
                 }
+                AppendFullAuxPayloadFromSceneExport(jm, m, texturePathById, textureNameById, textureSrgbById);
 
                 m.blendMode = ReadIntField(jm, "blend_mode", 0);
                 m.twoSided  = ReadBoolFieldLoose(jm, "two_sided", false);
@@ -1716,6 +2154,8 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 m.roughnessTexIndex = addLinearTexById(ReadStringField(jm, "roughness_texture_id", std::string{}));
                 m.metallicTexIndex  = addLinearTexById(ReadStringField(jm, "metallic_texture_id", std::string{}));
                 m.occlusionTexIndex = addLinearTexById(ReadStringField(jm, "occlusion_texture_id", std::string{}));
+                PopulateTunnelMasterMaterialTexturesFromSceneExport(jm, m, addSrgbTexById, addLinearTexById);
+                SanitizeStandalonePbrTextureOverrides(m);
 
                 const int sharedBaseUvSet = ReadSceneUvSetParam(jm,
                     {"Base UV Coord", "Base UV Channel", "Base Texture UV Coord"},
@@ -1743,6 +2183,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     -1);
                 const bool emissionUvExplicit = (parsedEmissionUvSet >= 0);
                 m.emissionUvSet = ClampUvSetIndex(emissionUvExplicit ? parsedEmissionUvSet : m.baseColorUvSet);
+                PopulateTunnelMasterMaterialParamsFromSceneExport(jm, m, m.baseColorUvSet);
 
                 m.decalTilingU         = ReadSceneScalarParam(jm, {"TilingU"}, 1.0f);
                 m.decalTilingV         = ReadSceneScalarParam(jm, {"TilingV"}, 1.0f);
@@ -1921,6 +2362,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     m.emissionUseAlphaMask = false;
                 }
 
+                ResolveAuxTextureIndices(m.auxTex, baseColorTexIndexByPath, linearTexIndexByPath);
                 parsedMaterials.push_back(m);
                 materialEmissionUvExplicit.push_back(emissionUvExplicit);
 
@@ -2337,6 +2779,8 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 });
         }
 
+        DumpMaterialPayloadIfRequested(parsedMaterials);
+
         if (outRes)
         {
             outRes->baseColorTextures = std::move(baseColorTextures);
@@ -2644,6 +3088,7 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
                           << "' for material '" << m.name
                           << "' (resolved model: " << MasterMaterialModelName(m.masterMaterialModel) << ")\n";
             }
+            AppendFullAuxPayloadFromLegacy(jm, metaDir, m);
 
             m.baseColor = ReadVec3Field(jm, "base_color", Vec3{1,1,1});
             const Vec3 colorTint = ReadNamedVectorParam(jm, "Color Tint", Vec3{1,1,1});
@@ -2721,6 +3166,8 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             m.roughnessTexIndex = addLinearTex(ReadStringField(jm, "roughness_texture", std::string{}));
             m.metallicTexIndex  = addLinearTex(ReadStringField(jm, "metallic_texture", std::string{}));
             m.occlusionTexIndex = addLinearTex(ReadStringField(jm, "occlusion_texture", std::string{}));
+            PopulateTunnelMasterMaterialTexturesFromLegacy(jm, m, addSrgbTex, addLinearTex);
+            SanitizeStandalonePbrTextureOverrides(m);
 
             // Decal helpers: not a full UE material graph export, but enough to reconstruct
             // a DBuffer-like projected decal with opacity/detail modulation.
@@ -2777,6 +3224,7 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             m.metallic         = ReadFloatField(jm, "metallic", 0.0f);
             m.roughness        = ReadFloatField(jm, "roughness", 0.5f);
             m.opacity          = ReadNamedScalarParam(jm, "Opacity Multi", 1.0f);
+            PopulateTunnelMasterMaterialParamsFromLegacy(jm, m, m.baseColorUvSet);
 
             const std::string materialNameLower = NormalizeKey(m.name);
             m.thinEmissiveSurface =
@@ -2796,6 +3244,7 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
                 m.emissionUseAlphaMask = true;
             }
 
+            ResolveAuxTextureIndices(m.auxTex, baseColorTexIndexByPath, linearTexIndexByPath);
             parsedMaterials.push_back(m);
 
             const int32_t idx = (int32_t)i; // stable = JSON order
@@ -3033,10 +3482,12 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
         }
 
         std::stable_sort(parsedDecals.begin(), parsedDecals.end(), [](const SceneMetaDecal& a, const SceneMetaDecal& b)
-        {
+    {
             return a.sortOrder < b.sortOrder;
         });
     }
+
+    DumpMaterialPayloadIfRequested(parsedMaterials);
 
     if (outRes)
     {

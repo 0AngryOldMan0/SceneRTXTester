@@ -344,6 +344,65 @@ namespace
                 << " normalUvSet=" << src.normalUvSet << "->" << gpu.normalUvSet
                 << " ormTex=" << src.ormTexIndex << "->" << gpu.ormTexIndex
                 << " ormUvSet=" << src.ormUvSet << "->" << gpu.ormUvSet
+                << " ormChannels=("
+                << static_cast<int>(src.ormChannels.occlusion) << ","
+                << static_cast<int>(src.ormChannels.roughness) << ","
+                << static_cast<int>(src.ormChannels.metallic) << ")->("
+                << static_cast<int>(gpu.ormChannelOcclusion) << ","
+                << static_cast<int>(gpu.ormChannelRoughness) << ","
+                << static_cast<int>(gpu.ormChannelMetallic) << ")"
+                << " masterModel=" << static_cast<std::uint32_t>(src.masterMaterialModel)
+                << " floorParams=("
+                << src.tunnelFloorParams.roughnessValue << ","
+                << src.tunnelFloorParams.roughnessMulti << ","
+                << src.tunnelFloorParams.normalFlatness << ","
+                << src.tunnelFloorParams.aoRoughnessMulti << ","
+                << src.tunnelFloorParams.puddlesVertexColorMulti << ","
+                << src.tunnelFloorParams.puddlesBlendSharpness << ","
+                << src.tunnelFloorParams.puddlesMaskPower << ","
+                << src.tunnelFloorParams.puddlesMaskMultiply << ","
+                << src.tunnelFloorParams.dirtBlendSharpness << ","
+                << src.tunnelFloorParams.dirtVertexColorMulti << ","
+                << src.tunnelFloorParams.dirtUvScale << ","
+                << src.tunnelFloorParams.puddlesMixMapUvSet << ","
+                << src.tunnelFloorParams.dirtMixMapUvSet << ")->("
+                << gpu.tunnelFloor.roughnessValue << ","
+                << gpu.tunnelFloor.roughnessMulti << ","
+                << gpu.tunnelFloor.normalFlatness << ","
+                << gpu.tunnelFloor.aoRoughnessMulti << ","
+                << gpu.tunnelFloor.puddlesVertexColorMulti << ","
+                << gpu.tunnelFloor.puddlesBlendSharpness << ","
+                << gpu.tunnelFloor.puddlesMaskPower << ","
+                << gpu.tunnelFloor.puddlesMaskMultiply << ","
+                << gpu.tunnelFloor.dirtBlendSharpness << ","
+                << gpu.tunnelFloor.dirtVertexColorMulti << ","
+                << gpu.tunnelFloor.dirtUvScale << ","
+                << gpu.tunnelFloor.puddlesMixMapUvSet << ","
+                << gpu.tunnelFloor.dirtMixMapUvSet << ")"
+                << " floorTex=("
+                << src.tunnelFloorParams.dirtMaskTexIndex << ","
+                << src.tunnelFloorParams.puddlesMaskTexIndex << ","
+                << src.tunnelFloorParams.dirtAlbedoTexIndex << ","
+                << src.tunnelFloorParams.concreteFillAlbedoTexIndex << ","
+                << src.tunnelFloorParams.concreteFillNormalTexIndex << ","
+                << src.tunnelFloorParams.dirtNormalTexIndex << ")->("
+                << gpu.tunnelFloor.dirtMaskTexIndex << ","
+                << gpu.tunnelFloor.puddlesMaskTexIndex << ","
+                << gpu.tunnelFloor.dirtAlbedoTexIndex << ","
+                << gpu.tunnelFloor.concreteFillAlbedoTexIndex << ","
+                << gpu.tunnelFloor.concreteFillNormalTexIndex << ","
+                << gpu.tunnelFloor.dirtNormalTexIndex << ")"
+                << " surfaceParams=("
+                << src.tunnelSurfaceParams.roughness << ","
+                << src.tunnelSurfaceParams.roughnessMulti << ","
+                << src.tunnelSurfaceParams.roughnessPower << ","
+                << src.tunnelSurfaceParams.metalnessValue << ","
+                << src.tunnelSurfaceParams.dirtRoughness << ")->("
+                << gpu.tunnelSurface.roughness << ","
+                << gpu.tunnelSurface.roughnessMulti << ","
+                << gpu.tunnelSurface.roughnessPower << ","
+                << gpu.tunnelSurface.metalnessValue << ","
+                << gpu.tunnelSurface.dirtRoughness << ")"
                 << " occlusionTex=" << src.occlusionTexIndex << "->" << gpu.occlusionTexIndex
                 << " occlusionUvSet=" << src.occlusionUvSet << "->" << gpu.occlusionUvSet
                 << " flags=0x" << std::hex << gpu.flags << std::dec
@@ -478,6 +537,14 @@ namespace
             addFloat(v.x);
             addFloat(v.y);
             addFloat(v.z);
+        }
+
+        void addVec4(const Vec4 &v)
+        {
+            addFloat(v.x);
+            addFloat(v.y);
+            addFloat(v.z);
+            addFloat(v.w);
         }
 
         void addString(const std::string &s)
@@ -1080,6 +1147,29 @@ namespace
         hash.addI32(material.specialModel);
         hash.addI32(material.specialTex0Index);
         hash.addI32(material.specialTex1Index);
+        hash.addU64(static_cast<std::uint64_t>(material.auxTex.size()));
+        for (const SceneMetaAuxTextureEntry &tex : material.auxTex)
+        {
+            hash.addString(tex.name);
+            hash.addString(tex.sourceRef);
+            hash.addString(tex.textureName);
+            hash.addString(tex.textureAssetPath);
+            hash.addString(tex.resolvedPath);
+            hash.addI32(tex.textureIndex);
+            hash.addBool(tex.isLinear);
+        }
+        hash.addU64(static_cast<std::uint64_t>(material.auxScalar.size()));
+        for (const SceneMetaAuxScalarEntry &scalar : material.auxScalar)
+        {
+            hash.addString(scalar.name);
+            hash.addFloat(scalar.value);
+        }
+        hash.addU64(static_cast<std::uint64_t>(material.auxVec4.size()));
+        for (const SceneMetaAuxVec4Entry &vec : material.auxVec4)
+        {
+            hash.addString(vec.name);
+            hash.addVec4(vec.value);
+        }
         hash.addFloat(material.specialScalar0);
         hash.addFloat(material.specialScalar1);
         hash.addFloat(material.specialScalar2);
@@ -1109,6 +1199,30 @@ namespace
         hash.addI32(material.roughnessUvSet);
         hash.addI32(material.metallicUvSet);
         hash.addI32(material.occlusionUvSet);
+        hash.addFloat(material.tunnelFloorParams.roughnessValue);
+        hash.addFloat(material.tunnelFloorParams.roughnessMulti);
+        hash.addFloat(material.tunnelFloorParams.normalFlatness);
+        hash.addFloat(material.tunnelFloorParams.aoRoughnessMulti);
+        hash.addFloat(material.tunnelFloorParams.puddlesVertexColorMulti);
+        hash.addFloat(material.tunnelFloorParams.puddlesBlendSharpness);
+        hash.addFloat(material.tunnelFloorParams.puddlesMaskPower);
+        hash.addFloat(material.tunnelFloorParams.puddlesMaskMultiply);
+        hash.addFloat(material.tunnelFloorParams.dirtBlendSharpness);
+        hash.addFloat(material.tunnelFloorParams.dirtVertexColorMulti);
+        hash.addFloat(material.tunnelFloorParams.dirtUvScale);
+        hash.addI32(material.tunnelFloorParams.puddlesMixMapUvSet);
+        hash.addI32(material.tunnelFloorParams.dirtMixMapUvSet);
+        hash.addI32(material.tunnelFloorParams.dirtMaskTexIndex);
+        hash.addI32(material.tunnelFloorParams.puddlesMaskTexIndex);
+        hash.addI32(material.tunnelFloorParams.dirtAlbedoTexIndex);
+        hash.addI32(material.tunnelFloorParams.concreteFillAlbedoTexIndex);
+        hash.addI32(material.tunnelFloorParams.concreteFillNormalTexIndex);
+        hash.addI32(material.tunnelFloorParams.dirtNormalTexIndex);
+        hash.addFloat(material.tunnelSurfaceParams.roughness);
+        hash.addFloat(material.tunnelSurfaceParams.roughnessMulti);
+        hash.addFloat(material.tunnelSurfaceParams.roughnessPower);
+        hash.addFloat(material.tunnelSurfaceParams.metalnessValue);
+        hash.addFloat(material.tunnelSurfaceParams.dirtRoughness);
         hash.addU8(material.ormChannels.occlusion);
         hash.addU8(material.ormChannels.roughness);
         hash.addU8(material.ormChannels.metallic);
@@ -1382,12 +1496,40 @@ namespace
             pbr.specialModel = material.specialModel;
             pbr.specialTex0Index = mapSpecialColorTextureIndex(material.specialTex0Index);
             pbr.specialTex1Index = mapSpecialColorTextureIndex(material.specialTex1Index);
+            pbr.ormChannelOcclusion = static_cast<std::uint8_t>(std::min<int>(material.ormChannels.occlusion, 3));
+            pbr.ormChannelRoughness = static_cast<std::uint8_t>(std::min<int>(material.ormChannels.roughness, 3));
+            pbr.ormChannelMetallic = static_cast<std::uint8_t>(std::min<int>(material.ormChannels.metallic, 3));
             pbr.specialScalar0 = material.specialScalar0;
             pbr.specialScalar1 = material.specialScalar1;
             pbr.specialScalar2 = material.specialScalar2;
             pbr.specialScalar3 = material.specialScalar3;
             pbr.specialScalar4 = material.specialScalar4;
             pbr.specialScalar5 = material.specialScalar5;
+            pbr.masterMaterialModel = static_cast<std::int32_t>(material.masterMaterialModel);
+            pbr.tunnelFloor.roughnessValue = material.tunnelFloorParams.roughnessValue;
+            pbr.tunnelFloor.roughnessMulti = material.tunnelFloorParams.roughnessMulti;
+            pbr.tunnelFloor.normalFlatness = material.tunnelFloorParams.normalFlatness;
+            pbr.tunnelFloor.aoRoughnessMulti = material.tunnelFloorParams.aoRoughnessMulti;
+            pbr.tunnelFloor.puddlesVertexColorMulti = material.tunnelFloorParams.puddlesVertexColorMulti;
+            pbr.tunnelFloor.puddlesBlendSharpness = material.tunnelFloorParams.puddlesBlendSharpness;
+            pbr.tunnelFloor.puddlesMaskPower = material.tunnelFloorParams.puddlesMaskPower;
+            pbr.tunnelFloor.puddlesMaskMultiply = material.tunnelFloorParams.puddlesMaskMultiply;
+            pbr.tunnelFloor.dirtBlendSharpness = material.tunnelFloorParams.dirtBlendSharpness;
+            pbr.tunnelFloor.dirtVertexColorMulti = material.tunnelFloorParams.dirtVertexColorMulti;
+            pbr.tunnelFloor.dirtUvScale = material.tunnelFloorParams.dirtUvScale;
+            pbr.tunnelFloor.puddlesMixMapUvSet = std::clamp(material.tunnelFloorParams.puddlesMixMapUvSet, 0, 2);
+            pbr.tunnelFloor.dirtMixMapUvSet = std::clamp(material.tunnelFloorParams.dirtMixMapUvSet, 0, 2);
+            pbr.tunnelFloor.dirtMaskTexIndex = mapNormalTextureIndex(material.tunnelFloorParams.dirtMaskTexIndex);
+            pbr.tunnelFloor.puddlesMaskTexIndex = mapNormalTextureIndex(material.tunnelFloorParams.puddlesMaskTexIndex);
+            pbr.tunnelFloor.dirtAlbedoTexIndex = mapBaseColorTextureIndex(material.tunnelFloorParams.dirtAlbedoTexIndex);
+            pbr.tunnelFloor.concreteFillAlbedoTexIndex = mapBaseColorTextureIndex(material.tunnelFloorParams.concreteFillAlbedoTexIndex);
+            pbr.tunnelFloor.concreteFillNormalTexIndex = mapNormalTextureIndex(material.tunnelFloorParams.concreteFillNormalTexIndex);
+            pbr.tunnelFloor.dirtNormalTexIndex = mapNormalTextureIndex(material.tunnelFloorParams.dirtNormalTexIndex);
+            pbr.tunnelSurface.roughness = material.tunnelSurfaceParams.roughness;
+            pbr.tunnelSurface.roughnessMulti = material.tunnelSurfaceParams.roughnessMulti;
+            pbr.tunnelSurface.roughnessPower = material.tunnelSurfaceParams.roughnessPower;
+            pbr.tunnelSurface.metalnessValue = material.tunnelSurfaceParams.metalnessValue;
+            pbr.tunnelSurface.dirtRoughness = material.tunnelSurfaceParams.dirtRoughness;
             if (material.emissionUseAlphaMask)
                 pbr.flags |= HIP_MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK;
             if (material.thinEmissiveSurface)
