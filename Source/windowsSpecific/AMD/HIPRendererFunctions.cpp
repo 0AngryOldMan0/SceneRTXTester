@@ -1065,6 +1065,8 @@ namespace
 
     void HashMaterial(HashBuilder64 &hash, const SceneMetaMaterial &material)
     {
+        hash.addString(material.baseMaterialAssetPath);
+        hash.addU32(static_cast<std::uint32_t>(material.masterMaterialModel));
         hash.addVec3(material.baseColor);
         hash.addVec3(material.emissionColor);
         hash.addFloat(material.emissionStrength);

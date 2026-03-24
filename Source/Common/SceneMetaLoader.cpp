@@ -496,6 +496,55 @@ static bool IsSpecialVisibleEmissiveSurface(std::string_view materialNameLower,
            ContainsAny(baseMaterialPathLower, {"/mm_emissive_", "mm_emissive_", "headlight"});
 }
 
+static SceneMetaMasterMaterialModel ClassifyMasterMaterialModel(std::string_view baseMaterialPathLower)
+{
+    if (ContainsAny(baseMaterialPathLower, {"mm_emissive_headlights_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Emissive_Headlights_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_tunnel_floor_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_tunnel_wall_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_mesh_decal_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Mesh_Decal_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_concrete_edging_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Concrete_Edging_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_vent_offset_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Vent_Offset_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_webs_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Webs_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_black_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Black_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_decal_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Decal_01a;
+    if (ContainsAny(baseMaterialPathLower, {"mm_material_01a"}))
+        return SceneMetaMasterMaterialModel::MM_Material_01a;
+    return SceneMetaMasterMaterialModel::GenericPBR;
+}
+
+static bool IsSubwayTunnelMasterMaterialPath(std::string_view baseMaterialPathLower)
+{
+    return ContainsAny(baseMaterialPathLower, {"/game/subway_tunnel/materials/masters/"});
+}
+
+static const char* MasterMaterialModelName(SceneMetaMasterMaterialModel model)
+{
+    switch (model)
+    {
+        case SceneMetaMasterMaterialModel::GenericPBR:                   return "GenericPBR";
+        case SceneMetaMasterMaterialModel::MM_Material_01a:             return "MM_Material_01a";
+        case SceneMetaMasterMaterialModel::MM_Decal_01a:                return "MM_Decal_01a";
+        case SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a:         return "MM_Tunnel_Floor_01a";
+        case SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a:          return "MM_Tunnel_Wall_01a";
+        case SceneMetaMasterMaterialModel::MM_Emissive_Headlights_01a:  return "MM_Emissive_Headlights_01a";
+        case SceneMetaMasterMaterialModel::MM_Concrete_Edging_01a:      return "MM_Concrete_Edging_01a";
+        case SceneMetaMasterMaterialModel::MM_Mesh_Decal_01a:           return "MM_Mesh_Decal_01a";
+        case SceneMetaMasterMaterialModel::MM_Webs_01a:                 return "MM_Webs_01a";
+        case SceneMetaMasterMaterialModel::MM_Vent_Offset_01a:          return "MM_Vent_Offset_01a";
+        case SceneMetaMasterMaterialModel::MM_Black_01a:                return "MM_Black_01a";
+        default:                                                        return "Unknown";
+    }
+}
+
     static bool LooksFogLike(std::string_view nameLower)
     {
         return (nameLower.find("fog") != std::string_view::npos) ||
@@ -1611,6 +1660,17 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 m.name = ReadStringField(jm, "name", std::string{});
                 if (m.name.empty())
                     m.name = "Material_" + std::to_string(i);
+                m.baseMaterialAssetPath = ReadStringField(jm, "base_material_asset_path", std::string{});
+                const std::string baseMaterialPathLower = ToLowerCopy(m.baseMaterialAssetPath);
+                m.masterMaterialModel = ClassifyMasterMaterialModel(baseMaterialPathLower);
+                if (m.masterMaterialModel == SceneMetaMasterMaterialModel::GenericPBR &&
+                    IsSubwayTunnelMasterMaterialPath(baseMaterialPathLower))
+                {
+                    std::cerr << "SceneMetaLoader: unclassified SubwayTunnel master material path '"
+                              << m.baseMaterialAssetPath
+                              << "' for material '" << m.name
+                              << "' (resolved model: " << MasterMaterialModelName(m.masterMaterialModel) << ")\n";
+                }
 
                 m.blendMode = ReadIntField(jm, "blend_mode", 0);
                 m.twoSided  = ReadBoolFieldLoose(jm, "two_sided", false);
@@ -1731,7 +1791,6 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     (std::abs(m.emissionColor.z) > 1e-6f);
 
                 const std::string materialNameLower = ToLowerCopy(m.name);
-                const std::string baseMaterialPathLower = ToLowerCopy(ReadStringField(jm, "base_material_asset_path", std::string{}));
                 const std::string emissiveTexNameLower = ToLowerCopy(textureNameById.count(emissiveTexId) ? textureNameById[emissiveTexId] : std::string{});
                 const std::string emissiveTexPathLower = ToLowerCopy(texturePathById.count(emissiveTexId) ? texturePathById[emissiveTexId] : std::string{});
                 const int materialDomain = ReadIntField(jm, "material_domain", 0);
@@ -2574,6 +2633,17 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             m.name = ReadStringField(jm, "name", std::string{});
             if (m.name.empty())
                 m.name = "Material_" + std::to_string(i);
+            m.baseMaterialAssetPath = ReadStringField(jm, "base_material_asset_path", std::string{});
+            const std::string baseMaterialPathLower = ToLowerCopy(m.baseMaterialAssetPath);
+            m.masterMaterialModel = ClassifyMasterMaterialModel(baseMaterialPathLower);
+            if (m.masterMaterialModel == SceneMetaMasterMaterialModel::GenericPBR &&
+                IsSubwayTunnelMasterMaterialPath(baseMaterialPathLower))
+            {
+                std::cerr << "SceneMetaLoader: unclassified SubwayTunnel master material path '"
+                          << m.baseMaterialAssetPath
+                          << "' for material '" << m.name
+                          << "' (resolved model: " << MasterMaterialModelName(m.masterMaterialModel) << ")\n";
+            }
 
             m.baseColor = ReadVec3Field(jm, "base_color", Vec3{1,1,1});
             const Vec3 colorTint = ReadNamedVectorParam(jm, "Color Tint", Vec3{1,1,1});
@@ -2709,7 +2779,6 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             m.opacity          = ReadNamedScalarParam(jm, "Opacity Multi", 1.0f);
 
             const std::string materialNameLower = NormalizeKey(m.name);
-            const std::string baseMaterialPathLower = ToLowerCopy(ReadStringField(jm, "base_material_asset_path", std::string{}));
             m.thinEmissiveSurface =
                 (m.emissionStrength > 0.0f) &&
                 (m.blendMode >= 2) &&

@@ -68,9 +68,26 @@ struct SceneMetaFog
 };
 
 // Материал из LevelMeta JSON.
+enum class SceneMetaMasterMaterialModel : std::uint32_t
+{
+    GenericPBR = 0,
+    MM_Material_01a,
+    MM_Decal_01a,
+    MM_Tunnel_Floor_01a,
+    MM_Tunnel_Wall_01a,
+    MM_Emissive_Headlights_01a,
+    MM_Concrete_Edging_01a,
+    MM_Mesh_Decal_01a,
+    MM_Webs_01a,
+    MM_Vent_Offset_01a,
+    MM_Black_01a
+};
+
 struct SceneMetaMaterial
 {
     std::string name;
+    std::string baseMaterialAssetPath;
+    SceneMetaMasterMaterialModel masterMaterialModel = SceneMetaMasterMaterialModel::GenericPBR;
 
     Vec3  baseColor{1.0f, 1.0f, 1.0f};
     Vec3  emissionColor{0.0f, 0.0f, 0.0f};

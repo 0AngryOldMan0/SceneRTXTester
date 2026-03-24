@@ -94,3 +94,7 @@ From PowerShell the wrapper script does the same thing and imports the Visual St
 - HIP on Windows is built through `hipcc` and linked into the normal MSVC build. This avoids fragile `enable_language(HIP)` detection issues in ROCm on Windows.
 - The verified AMD preset in this workspace is `windows-hip-debug` with ROCm 6.4 and `gfx1030`.
 - CUDA presets are wired up, but they require a local CUDA Toolkit installation with `nvcc` available in `PATH`, or `CMAKE_CUDA_COMPILER` set explicitly.
+
+
+## Командя для запуска
+powershell -ExecutionPolicy Bypass -File .\build.ps1 hip Debug -Clean - сборка проекта
