@@ -78,6 +78,8 @@ set(SRC_COMMON
     Source/Common/SceneLoaderFactory.cpp
     Source/Common/SceneObject.cpp
     Source/Common/SceneJSONLoader.cpp
+    Source/Common/RendererRegistry.cpp
+    Source/Common/RendererFactory.cpp
 )
 
 # -----------------------

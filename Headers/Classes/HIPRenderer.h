@@ -14,6 +14,18 @@ public:
     bool initialize() override;
     void cleanup() override;
 
+    /**
+     * @brief Initialize HIP renderer with RenderCommand
+     * Handles HIP-specific parameters: metadata, accumulation mode, debug views
+     */
+    bool initializeWithCommand(const RenderCommand &command) override;
+
+    /**
+     * @brief Validate that HIP renderer can execute the command
+     * Currently always returns true; can be extended for HIP-specific validation
+     */
+    bool validateCommand(const RenderCommand &command) const override;
+
     bool render(const Scene &scene,
                 const Camera &camera,
                 std::vector<Vec3> &framebuffer) override;
@@ -32,6 +44,24 @@ public:
                        std::vector<Vec3> &framebuffer);
 
     void resetAccumulation() override;
+
+    /**
+     * @brief Helper: Convert generic RenderCommand::AccumulationMode to HIP-specific enum
+     */
+    static HIPAccumulationMode commandModeToHIPMode(RenderCommand::AccumulationMode mode)
+    {
+        return mode == RenderCommand::AccumulationMode::PreviewProgressive
+                   ? HIPAccumulationMode::PreviewProgressive
+                   : HIPAccumulationMode::FinalStill;
+    }
+
+    /**
+     * @brief Helper: Convert generic RenderCommand::DebugView to HIP-specific enum
+     */
+    static HIPDebugView commandViewToHIPView(RenderCommand::DebugView view)
+    {
+        return static_cast<HIPDebugView>(static_cast<std::uint32_t>(view));
+    }
 
 private:
     const SceneMetaResources *m_metaRes = nullptr;

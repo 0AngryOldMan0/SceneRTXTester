@@ -1,5 +1,6 @@
 #include "HIPRenderer.h"
 #include "CameraData.h"
+#include "Patterns/RendererRegistry.h"
 
 #include <chrono>
 #include <filesystem>
@@ -90,6 +91,31 @@ void HIPRenderer::setDebugView(HIPDebugView view)
 bool HIPRenderer::initialize()
 {
     return InitHIPRenderer();
+}
+
+bool HIPRenderer::initializeWithCommand(const RenderCommand &command)
+{
+    // Call base implementation (set image size and samples)
+    if (!Renderer::initializeWithCommand(command))
+        return false;
+
+    // Apply HIP-specific parameters from command
+    if (command.hasMetadata())
+    {
+        setMetaResources(command.getMetadata());
+    }
+
+    setAccumulationMode(commandModeToHIPMode(command.getAccumulationMode()));
+    setDebugView(commandViewToHIPView(command.getDebugView()));
+
+    return true;
+}
+
+bool HIPRenderer::validateCommand(const RenderCommand &command) const
+{
+    // HIP supports all features, so validation always succeeds
+    // Could add specific checks here later (e.g., max resolution)
+    return true;
 }
 
 bool HIPRenderer::preloadSceneResources()
@@ -188,4 +214,21 @@ bool HIPRenderer::renderTexture(const Scene &scene,
     }
 
     return success;
+}
+
+// ===== Self-Registration in RendererRegistry =====
+// This allows HIPRenderer to be instantiated without modifying RenderManager or main.cpp
+namespace
+{
+    struct HIPRendererRegistrar
+    {
+        HIPRendererRegistrar()
+        {
+            RendererRegistry::getInstance().registerRenderer(
+                "HIP",
+                []()
+                { return std::make_unique<HIPRenderer>(); });
+        }
+    };
+    static HIPRendererRegistrar hip_renderer_registrar;
 }

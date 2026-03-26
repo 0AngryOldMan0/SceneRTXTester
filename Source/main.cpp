@@ -15,18 +15,14 @@
 #include <limits>
 #include <cmath>
 
-#include "../Headers/Classes/SceneLoaderFactory.h"
-#include "../Headers/Classes/Scene.h"
-#include "../Headers/Classes/Camera.h"
-#include "../Headers/Classes/RenderManager.h"
-#include "../Headers/SceneMetaLoader.h"
-
-#ifdef USE_HIP_RENDERER
-#include "../Headers/Classes/HIPRenderer.h"
-#endif
-#ifdef USE_METAL_RENDERER
-#include "../Headers/Classes/MetalRenderer.h"
-#endif
+#include "SceneLoaderFactory.h"
+#include "Scene.h"
+#include "Camera.h"
+#include "RenderManager.h"
+#include "SceneMetaLoader.h"
+#include "Renderer.h"
+#include "../Headers/Patterns/RendererFactory.h"
+#include "../Headers/Patterns/RenderCommand.h"
 
 namespace fs = std::filesystem;
 
@@ -51,17 +47,17 @@ namespace
 
     static std::string ToLower(std::string s)
     {
-        for (char& c : s)
+        for (char &c : s)
             c = (char)std::tolower((unsigned char)c);
         return s;
     }
 
-    static bool LooksLikeIntegerArg(const char* s)
+    static bool LooksLikeIntegerArg(const char *s)
     {
         if (!s || *s == '\0')
             return false;
 
-        char* end = nullptr;
+        char *end = nullptr;
         std::strtol(s, &end, 10);
         return end && *end == '\0';
     }
@@ -83,7 +79,7 @@ namespace
         return true;
     }
 
-    static fs::path DefaultMetaPathFromScene(const fs::path& scenePath)
+    static fs::path DefaultMetaPathFromScene(const fs::path &scenePath)
     {
         const std::string ext = ToLower(scenePath.extension().string());
         if (ext == ".json")
@@ -95,7 +91,7 @@ namespace
         return p;
     }
 
-    static void PrintUsage(const char* exe)
+    static void PrintUsage(const char *exe)
     {
         std::cerr
             << "Usage:\n"
@@ -146,9 +142,8 @@ namespace
         }
     }
 
-    static std::string DetectRendererName(const RenderManager &renderManager)
+    static std::string DetectRendererName(const std::vector<std::unique_ptr<Renderer>> &renderers)
     {
-        const auto &renderers = renderManager.getRenderers();
         if (renderers.empty() || !renderers.front())
             return {};
 
@@ -167,8 +162,7 @@ namespace
     {
         RenderDimensions dims{
             std::max(1, requestedWidth),
-            std::max(1, requestedHeight)
-        };
+            std::max(1, requestedHeight)};
 
         if (!metaCam.constrainAspectRatio ||
             !std::isfinite(metaCam.aspectRatio) ||
@@ -187,12 +181,12 @@ namespace
         if (cameraAspect > targetAspect)
         {
             dims.height = std::max(1, static_cast<int>(std::lround(
-                static_cast<double>(dims.width) / static_cast<double>(cameraAspect))));
+                                          static_cast<double>(dims.width) / static_cast<double>(cameraAspect))));
         }
         else
         {
             dims.width = std::max(1, static_cast<int>(std::lround(
-                static_cast<double>(dims.height) * static_cast<double>(cameraAspect))));
+                                         static_cast<double>(dims.height) * static_cast<double>(cameraAspect))));
         }
 
         dims.width = std::min(dims.width, std::max(1, requestedWidth));
@@ -200,11 +194,11 @@ namespace
         return dims;
     }
 
-    static void SetRendererImageSize(RenderManager &renderManager,
-                                     int width,
-                                     int height)
+    static void UpdateRendererDimensions(std::vector<std::unique_ptr<Renderer>> &renderers,
+                                         int width,
+                                         int height)
     {
-        for (auto &renderer : renderManager.getRenderers())
+        for (auto &renderer : renderers)
             renderer->setImageSize(width, height);
     }
 }
@@ -264,13 +258,13 @@ int main(int argc, char **argv)
         ++argIndex;
     }
 
-    int imageWidth  = 1920;
+    int imageWidth = 1920;
     int imageHeight = 1080;
     int samplesPerPixel = 4;
 
     if (argIndex + 1 < positionalArgs.size())
     {
-        imageWidth  = std::max(1, std::atoi(positionalArgs[argIndex + 0].c_str()));
+        imageWidth = std::max(1, std::atoi(positionalArgs[argIndex + 0].c_str()));
         imageHeight = std::max(1, std::atoi(positionalArgs[argIndex + 1].c_str()));
         argIndex += 2;
     }
@@ -327,58 +321,65 @@ int main(int argc, char **argv)
         }
 
         const auto tMeta1 = Clock::now();
-        RenderManager renderManager;
 
-        if (renderManager.getRenderers().empty())
+        // ===== NEW PATTERN: Use RendererFactory instead of RenderManager =====
+        auto renderers = RendererFactory::createAllAvailableRenderers();
+
+        if (renderers.empty())
         {
             std::cerr
-                << "No renderer backend is enabled for this build.\n"
-                << "Enable one of USE_HIP_RENDERER, USE_CUDA_RENDERER, or USE_METAL_RENDERER in CMake.\n";
+                << "No renderer backend is available.\n"
+                << "Check RendererRegistry for available renderers.\n";
             return 1;
         }
 
+        // ===== NEW PATTERN: Create RenderCommand with all parameters =====
+        RenderCommand renderCmd;
+        renderCmd.setImageSize(imageWidth, imageHeight)
+            .setSamplesPerPixel(samplesPerPixel)
+            .setMetadata(&metaRes);
+
+        // Map old flags to new command enums
+        if (exportHipDebugViews)
+        {
+            renderCmd.setDebugView(RenderCommand::DebugView::ShadingNormals);
+            renderCmd.setExportDebugViews(true);
+        }
+
+        // Map TextureRenderMode to RenderCommand::RenderMode
+        if (renderMode == TextureRenderMode::Preview)
+        {
+            renderCmd.setRenderMode(RenderCommand::RenderMode::Preview);
+        }
+        else
+        {
+            renderCmd.setRenderMode(RenderCommand::RenderMode::Progressive);
+        }
+
+        // ===== NEW PATTERN: Initialize all renderers uniformly =====
         const auto tPreload0 = tMeta1;
         bool didRendererPreload = false;
-        for (auto &renderer : renderManager.getRenderers())
-        {
-    #ifdef USE_HIP_RENDERER
-            if (auto *hip = dynamic_cast<HIPRenderer *>(renderer.get()))
-            {
-                hip->setMetaResources(&metaRes);
-                didRendererPreload = true;
-            }
-    #endif
-    #ifdef USE_METAL_RENDERER
-            if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
-            {
-                metal->setMetaResources(&metaRes);
-                didRendererPreload = true;
-            }
-    #endif
-            renderer->setSamplesPerPixel(samplesPerPixel);
-            renderer->setImageSize(imageWidth, imageHeight);
 
-    #ifdef USE_HIP_RENDERER
-            if (auto *hip = dynamic_cast<HIPRenderer *>(renderer.get()))
+        for (auto &renderer : renderers)
+        {
+            // Validate renderer can handle the command
+            if (!renderer->validateCommand(renderCmd))
             {
-                if (!hip->preloadSceneResources())
-                {
-                    std::cerr << "HIP resource preload failed\n";
-                    return 1;
-                }
+                std::cerr << "Renderer " << renderer->getName()
+                          << " cannot handle this command\n";
+                continue;
             }
-    #endif
-    #ifdef USE_METAL_RENDERER
-            if (auto *metal = dynamic_cast<MetalRenderer *>(renderer.get()))
+
+            // Initialize renderer with all parameters (no dynamic_cast!)
+            if (!renderer->initializeWithCommand(renderCmd))
             {
-                if (!metal->preloadSceneResources())
-                {
-                    std::cerr << "Metal resource preload failed\n";
-                    return 1;
-                }
+                std::cerr << "Failed to initialize " << renderer->getName() << "\n";
+                continue;
             }
-    #endif
+
+            didRendererPreload = true;
         }
+
         const auto tPreload1 = Clock::now();
 
         auto stats = scene.getStats();
@@ -390,7 +391,7 @@ int main(int argc, char **argv)
         scene.buildGlobalBVH(bvhStrategy);
         const auto tBVH1 = Clock::now();
 
-        const std::string rendererName = DetectRendererName(renderManager);
+        const std::string rendererName = DetectRendererName(renderers);
 
         fs::path outDir = fs::path("Results") / "GPUFrames";
         std::error_code ec;
@@ -411,7 +412,7 @@ int main(int argc, char **argv)
                 const RenderDimensions renderDims =
                     ComputeRenderDimensionsForCamera(metaCameras[ci], imageWidth, imageHeight);
 
-                SetRendererImageSize(renderManager, renderDims.width, renderDims.height);
+                UpdateRendererDimensions(renderers, renderDims.width, renderDims.height);
                 ApplyMetaCameraToCamera(metaCameras[ci], cam, renderDims.width, renderDims.height);
 
                 if (renderDims.width != imageWidth || renderDims.height != imageHeight)
@@ -431,26 +432,42 @@ int main(int argc, char **argv)
                     outDir /
                     (rendererName + "_TextureFrame_Cam" + std::to_string(ci) + "_" + camName);
 
-                renderManager.renderFrameTexture(scene,
-                                                cam,
-                                                rendererName,
-                                                base.string(),
-                                                renderMode,
-                                                samplesPerPixel,
-                                                exportHipDebugViews);
+                // Render with all available renderers
+                for (auto &renderer : renderers)
+                {
+                    std::cout << "  Rendering with " << renderer->getName() << "...\n";
+
+                    // Update dimensions for this camera
+                    renderer->setImageSize(renderDims.width, renderDims.height);
+
+                    // Render the frame
+                    std::vector<Vec3> framebuffer;
+                    if (!renderer->renderTexture(scene, cam, framebuffer))
+                    {
+                        std::cerr << "Rendering failed for " << renderer->getName() << "\n";
+                        continue;
+                    }
+                }
                 std::cout << "Frames for camera: <" << ci << "> generated successfully\n";
             }
         }
         else
         {
             const fs::path base = outDir / (rendererName + "_TextureFrame_DefaultCamera");
-            renderManager.renderFrameTexture(scene,
-                                            cam,
-                                            rendererName,
-                                            base.string(),
-                                            renderMode,
-                                            samplesPerPixel,
-                                            exportHipDebugViews);
+
+            // Render with all available renderers
+            for (auto &renderer : renderers)
+            {
+                std::cout << "Rendering with " << renderer->getName() << "...\n";
+
+                // Render the frame
+                std::vector<Vec3> framebuffer;
+                if (!renderer->renderTexture(scene, cam, framebuffer))
+                {
+                    std::cerr << "Rendering failed for " << renderer->getName() << "\n";
+                    continue;
+                }
+            }
             std::cout << "Frames for default camera generated successfully\n";
         }
 
@@ -477,13 +494,13 @@ int main(int argc, char **argv)
         std::cout << "TLAS Nodes:            " << stats.globalBVHNodes << "\n";
         std::cout << "BLAS Nodes:            " << stats.meshBVHNodes << "\n";
         std::cout << "Global BVH Depth:      " << stats.globalBVHDepth << "\n";
-        std::cout << "Load time (scene):   " << msLoad   << " ms\n";
+        std::cout << "Load time (scene):   " << msLoad << " ms\n";
         std::cout << "Meta load time:      " << std::chrono::duration<double, std::milli>(tMeta1 - tLoad1).count() << " ms\n";
         if (didRendererPreload)
             std::cout << "Renderer preload time: " << msPreload << " ms\n";
-        std::cout << "BVH build time:      " << msBVH    << " ms\n";
+        std::cout << "BVH build time:      " << msBVH << " ms\n";
         std::cout << "Render time:         " << msRender << " ms\n";
-        std::cout << "Total time:          " << msTotal  << " ms\n";
+        std::cout << "Total time:          " << msTotal << " ms\n";
 
         return 0;
     }
@@ -493,4 +510,3 @@ int main(int argc, char **argv)
         return 1;
     }
 }
-

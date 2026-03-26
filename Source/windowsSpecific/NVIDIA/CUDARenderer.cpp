@@ -1,6 +1,7 @@
 #include "CudaRenderer.h"
 #include "CameraData.h"
 #include "CudaRendererFunctions.h"
+#include "Patterns/RendererRegistry.h"
 
 #include <filesystem>
 #include <iostream>
@@ -61,6 +62,29 @@ CudaRenderer::~CudaRenderer()
 bool CudaRenderer::initialize()
 {
     return InitCudaRenderer();
+}
+
+bool CudaRenderer::initializeWithCommand(const RenderCommand &command)
+{
+    // Call base implementation (set image size and samples)
+    if (!Renderer::initializeWithCommand(command))
+        return false;
+
+    // CUDA currently doesn't use metadata; can be extended in future
+    // Example: could preload PBR textures if metadata is provided
+    if (command.hasMetadata())
+    {
+        // TODO: Extend CUDA backend to support PBR materials from metadata
+    }
+
+    return true;
+}
+
+bool CudaRenderer::validateCommand(const RenderCommand &command) const
+{
+    // CUDA supports basic rendering
+    // Could add validation checks here (e.g., no debug views, no accumulation modes)
+    return true;
 }
 
 void CudaRenderer::cleanup()
@@ -199,4 +223,21 @@ CameraDataCPU CudaRenderer::prepareCameraData(const Camera &camera,
     camData.aspectRatio = camera.getAspectRatio();
 
     return camData;
+}
+
+// ===== Self-Registration in RendererRegistry =====
+// This allows CUDARenderer to be instantiated without modifying RenderManager or main.cpp
+namespace
+{
+    struct CUDARendererRegistrar
+    {
+        CUDARendererRegistrar()
+        {
+            RendererRegistry::getInstance().registerRenderer(
+                "CUDA",
+                []()
+                { return std::make_unique<CudaRenderer>(); });
+        }
+    };
+    static CUDARendererRegistrar cuda_renderer_registrar;
 }

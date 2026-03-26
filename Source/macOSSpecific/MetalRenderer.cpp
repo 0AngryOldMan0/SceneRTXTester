@@ -1,5 +1,6 @@
 #include "MetalRenderer.h"
 #include "CameraData.h"
+#include "RendererRegistry.h"
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -122,6 +123,29 @@ bool MetalRenderer::initialize()
     return InitMetalRenderer();
 }
 
+bool MetalRenderer::initializeWithCommand(const RenderCommand &command)
+{
+    // Call base implementation (set image size and samples)
+    if (!Renderer::initializeWithCommand(command))
+        return false;
+
+    // Apply Metal-specific parameters from command
+    if (command.hasMetadata())
+    {
+        setMetaResources(command.getMetadata());
+    }
+
+    setAccumulationMode(commandModeToMetalMode(command.getAccumulationMode()));
+
+    return true;
+}
+
+bool MetalRenderer::validateCommand(const RenderCommand &command) const
+{
+    // Metal supports all features
+    return true;
+}
+
 bool MetalRenderer::preloadSceneResources()
 {
     return PreloadMetalSceneResources(m_metaRes);
@@ -224,4 +248,21 @@ bool MetalRenderer::renderTexture(const Scene &scene,
     }
 
     return success;
+}
+
+// ===== Self-Registration in RendererRegistry =====
+// This allows MetalRenderer to be instantiated without modifying RenderManager or main.cpp
+namespace
+{
+    struct MetalRendererRegistrar
+    {
+        MetalRendererRegistrar()
+        {
+            RendererRegistry::getInstance().registerRenderer(
+                "Metal",
+                []()
+                { return std::make_unique<MetalRenderer>(); });
+        }
+    };
+    static MetalRendererRegistrar metal_renderer_registrar;
 }
