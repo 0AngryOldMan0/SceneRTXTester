@@ -137,6 +137,28 @@ struct SceneMetaTunnelSurfaceMaterialParams
     float roughnessPower = 1.0f;
     float metalnessValue = 0.0f;
     float dirtRoughness = 0.9f;
+    float primaryUvScale = 1.0f;
+    float normalUvScale = 1.0f;
+    float damageUvScale = 1.0f;
+    float detailUvScale = 1.0f;
+    float baseNormalIntensity = 1.0f;
+    float damagedNormalIntensity = 1.0f;
+    float fillNormalIntensity = 1.0f;
+    float damageBlendSharpness = 0.5f;
+    float damageMaskMultiply = 1.0f;
+    float damageMaskPower = 1.0f;
+    float vertexBlueMulti = 1.0f;
+    float vertexRedMulti = 1.0f;
+    float redMaskUvScale = 1.0f;
+    float damagedRoughnessMulti = 1.0f;
+    float fillBlendRatio = 0.0f;
+    float fillBlendPower = 1.0f;
+    int32_t blendMaskTexIndex = -1;
+    int32_t damagedAlbedoTexIndex = -1;
+    int32_t damagedNormalTexIndex = -1;
+    int32_t damagedOrmTexIndex = -1;
+    int32_t fillAlbedoTexIndex = -1;
+    int32_t fillNormalTexIndex = -1;
 };
 
 struct SceneMetaMaterial

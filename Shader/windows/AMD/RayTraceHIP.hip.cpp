@@ -113,7 +113,7 @@ constexpr float DENOISE_SIGMA_SPACE = 1.0f;
 constexpr float DENOISE_SIGMA_COLOR = 0.20f;
 constexpr float DENOISE_BLEND_FACTOR = 0.40f;
 constexpr float AO_INDIRECT_STRENGTH = 0.85f;
-constexpr bool NORMALMAP_FLIP_Y = false;
+constexpr bool NORMALMAP_FLIP_Y = true;
 constexpr int LIGHTING_CALIBRATION_MODE = 0;
 constexpr int BLOCK_SIZE = 8;
 constexpr int LIGHT_TYPE_POINT = 0;
@@ -343,7 +343,10 @@ __device__ static inline float clamp01(float x)
 
 __device__ static inline float3 EncodeNormalDebug(float3 n)
 {
-    return clamp(normalize(n) * 0.5f + float3(0.5f), 0.0f, 1.0f);
+    // Scene export is right-handed with Y mirrored from UE. Convert back to UE world-space
+    // before encoding debug normals so the output matches UE's world normal pass.
+    const float3 ueWorldNormal = float3(n.x, -n.y, n.z);
+    return clamp(normalize(ueWorldNormal) * 0.5f + float3(0.5f), 0.0f, 1.0f);
 }
 
 __device__ static inline float3 EncodeScalarDebug(float value)
@@ -388,6 +391,7 @@ __device__ static inline float3 EncodeMaterialModelDebug(int materialModel)
 
 __device__ static inline float3 EvaluateDebugView(std::uint32_t debugView,
                                                   float3 Ng,
+                                                  float3 NBase,
                                                   float3 Ns,
                                                   float ao,
                                                   float3 baseColor,
@@ -405,7 +409,10 @@ __device__ static inline float3 EvaluateDebugView(std::uint32_t debugView,
             return EncodeScalarDebug(ao);
         case HIPDebugView::NsMinusNg:
         {
-            const float diff = clamp01(0.5f * length(normalize(Ns) - normalize(Ng)));
+            // Compare against the interpolated shading normal before normal-map evaluation.
+            // Using the geometric face normal on smoothly shaded tunnel meshes makes the
+            // whole scene glow even when the tangent-space convention is correct.
+            const float diff = clamp01(0.5f * length(normalize(Ns) - normalize(NBase)));
             return float3(diff);
         }
         case HIPDebugView::BaseColor:
@@ -1599,11 +1606,136 @@ __device__ static inline void EvaluateTunnelWallMaterialCommon(const HIPTunnelSu
     metallic = clamp01(max(metallic, params.metalnessValue));
 }
 
+__device__ static inline float applyWallMaskShaping(float maskTex,
+                                                    float multiply,
+                                                    float power,
+                                                    float sharpness)
+{
+    float mask = powf(max(maskTex, 1.0e-4f), max(power, 1.0e-3f));
+    mask *= max(multiply, 0.0f);
+    mask = clamp01(mask);
+    mask = powf(mask, max(0.25f, 1.0f + sharpness * 6.0f));
+    return clamp01(mask);
+}
+
+__device__ static inline float3 applySampledNormalIntensity(float3 shadingNormal,
+                                                            float3 sampledNormal,
+                                                            float intensity)
+{
+    const float3 Ns = safeNormalize(sampledNormal);
+    const float  nDotBase = clamp(dot(Ns, shadingNormal), 1.0e-4f, 1.0f);
+    const float3 tangentDelta = Ns - shadingNormal * nDotBase;
+    return safeNormalize(shadingNormal * nDotBase + tangentDelta * max(intensity, 0.0f));
+}
+
 __device__ static inline void EvaluateTunnelWallMaterial(const MaterialGPU_PBR &mp,
-                                                         float ao,
+                                                         float2 rawUvBaseSet,
+                                                         float4 vertexColor,
+                                                         float3 shadingNormal,
+                                                         const Triangle *triangles,
+                                                         const SceneInstanceGPU *instances,
+                                                         int instanceIndex,
+                                                         int triIndex,
+                                                         float3 barycentrics,
+                                                         const SceneTextureArray &sceneTextures,
+                                                         float3 &baseColor,
+                                                         float3 &Ns,
+                                                         float &ao,
                                                          float &roughness,
                                                          float &metallic)
 {
+    Ns = applySampledNormalIntensity(shadingNormal, Ns, mp.tunnelSurface.baseNormalIntensity);
+
+    const float2 uvDamage = fract(rawUvBaseSet * max(mp.tunnelSurface.damageUvScale, 1.0e-3f));
+    const float2 uvDetail = fract(rawUvBaseSet * max(mp.tunnelSurface.detailUvScale, 1.0e-3f));
+    const float blueVertexMask = clamp01(vertexColor.z * max(mp.tunnelSurface.vertexBlueMulti, 0.0f));
+    float damageMaskBlue = blueVertexMask;
+    if (mp.tunnelSurface.blendMaskTexIndex >= 0)
+    {
+        const SampledTexel blendMaskTexel =
+            sampleTexture4(mp.tunnelSurface.blendMaskTexIndex,
+                           uvDamage,
+                           sceneTextures,
+                           SampledTexel(0.0f, 0.0f, 0.0f, 1.0f));
+        const float maskBlueTex = clamp01(blendMaskTexel.z);
+        damageMaskBlue *= applyWallMaskShaping(maskBlueTex,
+                                               mp.tunnelSurface.damageMaskMultiply,
+                                               mp.tunnelSurface.damageMaskPower,
+                                               mp.tunnelSurface.damageBlendSharpness);
+    }
+
+    const float damageMask = clamp01(damageMaskBlue);
+    const float fillMask =
+        clamp01(powf(max(damageMask, 1.0e-4f), max(mp.tunnelSurface.fillBlendPower, 1.0e-3f)) *
+                max(mp.tunnelSurface.fillBlendRatio, 0.0f) * 4.0f);
+
+    if (mp.tunnelSurface.damagedAlbedoTexIndex >= 0)
+    {
+        const float3 damagedAlbedo =
+            sampleTextureRGB(mp.tunnelSurface.damagedAlbedoTexIndex, uvDamage, sceneTextures, baseColor);
+        baseColor = mix(baseColor, damagedAlbedo, damageMask);
+    }
+
+    if (mp.tunnelSurface.fillAlbedoTexIndex >= 0)
+    {
+        const float3 fillAlbedo =
+            sampleTextureRGB(mp.tunnelSurface.fillAlbedoTexIndex, uvDetail, sceneTextures, baseColor);
+        baseColor = mix(baseColor, fillAlbedo, fillMask);
+    }
+
+    if (mp.tunnelSurface.damagedOrmTexIndex >= 0)
+    {
+        const SampledTexel damagedOrm = sampleTexture4(mp.tunnelSurface.damagedOrmTexIndex,
+                                                       uvDamage,
+                                                       sceneTextures,
+                                                       SampledTexel(ao, roughness, metallic, 1.0f));
+        const float damagedAo =
+            clamp01(sampledTexelChannel(damagedOrm, static_cast<std::uint32_t>(mp.ormChannelOcclusion), ao));
+        const float damagedRoughness =
+            clamp(sampledTexelChannel(damagedOrm, static_cast<std::uint32_t>(mp.ormChannelRoughness), roughness) *
+                      max(mp.tunnelSurface.damagedRoughnessMulti, 0.0f),
+                  0.02f,
+                  0.98f);
+        const float damagedMetallic =
+            clamp01(sampledTexelChannel(damagedOrm, static_cast<std::uint32_t>(mp.ormChannelMetallic), metallic));
+
+        ao = clamp01(mix(ao, damagedAo, damageMask));
+        roughness = clamp(mix(roughness, damagedRoughness, damageMask), 0.02f, 0.98f);
+        metallic = clamp01(mix(metallic, damagedMetallic, damageMask));
+    }
+
+    if (mp.tunnelSurface.damagedNormalTexIndex >= 0)
+    {
+        float3 damagedNs = sampleNormalMapInstanced(mp.tunnelSurface.damagedNormalTexIndex,
+                                                    mp.normalUvSet,
+                                                    uvDamage,
+                                                    shadingNormal,
+                                                    triangles,
+                                                    instances,
+                                                    instanceIndex,
+                                                    triIndex,
+                                                    barycentrics,
+                                                    sceneTextures);
+        damagedNs = applySampledNormalIntensity(shadingNormal, damagedNs, mp.tunnelSurface.damagedNormalIntensity);
+        Ns = safeNormalize(mix(Ns, damagedNs, damageMask));
+    }
+
+    if (mp.tunnelSurface.fillNormalTexIndex >= 0)
+    {
+        float3 fillNs = sampleNormalMapInstanced(mp.tunnelSurface.fillNormalTexIndex,
+                                                 mp.normalUvSet,
+                                                 uvDetail,
+                                                 shadingNormal,
+                                                 triangles,
+                                                 instances,
+                                                 instanceIndex,
+                                                 triIndex,
+                                                 barycentrics,
+                                                 sceneTextures);
+        fillNs = applySampledNormalIntensity(shadingNormal, fillNs, mp.tunnelSurface.fillNormalIntensity);
+        Ns = safeNormalize(mix(Ns, fillNs, fillMask));
+    }
+
     EvaluateTunnelWallMaterialCommon(mp.tunnelSurface, 0.50f, ao, roughness, metallic);
 }
 
@@ -1613,6 +1745,25 @@ __device__ static inline void EvaluateMMMaterial01a(const MaterialGPU_PBR &mp,
                                                     float &metallic)
 {
     EvaluateTunnelWallMaterialCommon(mp.tunnelSurface, 0.80f, ao, roughness, metallic);
+}
+
+__device__ static inline float MaterialPrimaryUvScale(const MaterialGPU_PBR &mp)
+{
+    if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_WALL_01A ||
+        mp.masterMaterialModel == MASTER_MATERIAL_MM_MATERIAL_01A)
+    {
+        return max(mp.tunnelSurface.primaryUvScale, 1.0e-3f);
+    }
+
+    return 1.0f;
+}
+
+__device__ static inline float MaterialNormalUvScale(const MaterialGPU_PBR &mp)
+{
+    if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_WALL_01A)
+        return max(mp.tunnelSurface.normalUvScale, 1.0e-3f);
+
+    return MaterialPrimaryUvScale(mp);
 }
 
 __device__ static inline float3 resolveTriangleEmissionTextured(const Triangle *triangles,
@@ -2776,14 +2927,16 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             {
                 const MaterialGPU_PBR mp = materialsPBR[matId];
                 materialModelDebug = DEBUG_MATERIAL_MODEL_GENERIC_PBR;
-                const float2 rawUvBase = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet);
+                const float primaryUvScale = MaterialPrimaryUvScale(mp);
+                const float2 rawUvBaseSet = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet);
+                const float2 rawUvBase = rawUvBaseSet * primaryUvScale;
                 const float2 uvBase = fract(rawUvBase);
                 const float2 uvEmission = fract(selectUvSet(uv0, uv1, uv2, mp.emissionUvSet));
-                const float2 uvNormal = fract(selectUvSet(uv0, uv1, uv2, mp.normalUvSet));
-                const float2 uvOrm = fract(selectUvSet(uv0, uv1, uv2, mp.ormUvSet));
-                const float2 uvRoughness = fract(selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet));
-                const float2 uvMetallic = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet));
-                const float2 uvOcclusion = fract(selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet));
+                const float2 uvNormal = fract(selectUvSet(uv0, uv1, uv2, mp.normalUvSet) * MaterialNormalUvScale(mp));
+                const float2 uvOrm = fract(selectUvSet(uv0, uv1, uv2, mp.ormUvSet) * primaryUvScale);
+                const float2 uvRoughness = fract(selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet) * primaryUvScale);
+                const float2 uvMetallic = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet) * primaryUvScale);
+                const float2 uvOcclusion = fract(selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet) * primaryUvScale);
                 const float2 uvDirtMix = fract(selectUvSet(uv0, uv1, uv2, mp.tunnelFloor.dirtMixMapUvSet));
                 const float2 uvPuddles = fract(selectUvSet(uv0, uv1, uv2, mp.tunnelFloor.puddlesMixMapUvSet));
                 const float2 uvDirtDetail = fract(rawUvBase * max(mp.tunnelFloor.dirtUvScale, 1.0e-3f));
@@ -2845,7 +2998,21 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
                 }
                 else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_TUNNEL_WALL_01A)
                 {
-                    EvaluateTunnelWallMaterial(mp, ao, roughness, metallic);
+                    EvaluateTunnelWallMaterial(mp,
+                                               rawUvBaseSet,
+                                               vertexColorDebug,
+                                               N,
+                                               triangles,
+                                               instances,
+                                               hit.instanceIndex,
+                                               hit.triIndex,
+                                               barycentrics,
+                                               sceneTextures,
+                                               baseColor,
+                                               Ns,
+                                               ao,
+                                               roughness,
+                                               metallic);
                 }
                 else if (mp.masterMaterialModel == MASTER_MATERIAL_MM_MATERIAL_01A)
                 {
@@ -2942,6 +3109,7 @@ __device__ static inline PathTraceTextureResult tracePathPixelTextured(uint2 gid
             {
                 radiance += EvaluateDebugView(volumeParams.debugView,
                                               Ng,
+                                              N,
                                               Ns,
                                               ao,
                                               baseColor,

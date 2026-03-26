@@ -397,12 +397,33 @@ namespace
                 << src.tunnelSurfaceParams.roughnessMulti << ","
                 << src.tunnelSurfaceParams.roughnessPower << ","
                 << src.tunnelSurfaceParams.metalnessValue << ","
-                << src.tunnelSurfaceParams.dirtRoughness << ")->("
+                << src.tunnelSurfaceParams.dirtRoughness << ","
+                << src.tunnelSurfaceParams.primaryUvScale << ","
+                << src.tunnelSurfaceParams.normalUvScale << ","
+                << src.tunnelSurfaceParams.damageUvScale << ","
+                << src.tunnelSurfaceParams.detailUvScale << ")->("
                 << gpu.tunnelSurface.roughness << ","
                 << gpu.tunnelSurface.roughnessMulti << ","
                 << gpu.tunnelSurface.roughnessPower << ","
                 << gpu.tunnelSurface.metalnessValue << ","
-                << gpu.tunnelSurface.dirtRoughness << ")"
+                << gpu.tunnelSurface.dirtRoughness << ","
+                << gpu.tunnelSurface.primaryUvScale << ","
+                << gpu.tunnelSurface.normalUvScale << ","
+                << gpu.tunnelSurface.damageUvScale << ","
+                << gpu.tunnelSurface.detailUvScale << ")"
+                << " surfaceTex=("
+                << src.tunnelSurfaceParams.blendMaskTexIndex << ","
+                << src.tunnelSurfaceParams.damagedAlbedoTexIndex << ","
+                << src.tunnelSurfaceParams.damagedNormalTexIndex << ","
+                << src.tunnelSurfaceParams.damagedOrmTexIndex << ","
+                << src.tunnelSurfaceParams.fillAlbedoTexIndex << ","
+                << src.tunnelSurfaceParams.fillNormalTexIndex << ")->("
+                << gpu.tunnelSurface.blendMaskTexIndex << ","
+                << gpu.tunnelSurface.damagedAlbedoTexIndex << ","
+                << gpu.tunnelSurface.damagedNormalTexIndex << ","
+                << gpu.tunnelSurface.damagedOrmTexIndex << ","
+                << gpu.tunnelSurface.fillAlbedoTexIndex << ","
+                << gpu.tunnelSurface.fillNormalTexIndex << ")"
                 << " occlusionTex=" << src.occlusionTexIndex << "->" << gpu.occlusionTexIndex
                 << " occlusionUvSet=" << src.occlusionUvSet << "->" << gpu.occlusionUvSet
                 << " flags=0x" << std::hex << gpu.flags << std::dec
@@ -1223,6 +1244,28 @@ namespace
         hash.addFloat(material.tunnelSurfaceParams.roughnessPower);
         hash.addFloat(material.tunnelSurfaceParams.metalnessValue);
         hash.addFloat(material.tunnelSurfaceParams.dirtRoughness);
+        hash.addFloat(material.tunnelSurfaceParams.primaryUvScale);
+        hash.addFloat(material.tunnelSurfaceParams.normalUvScale);
+        hash.addFloat(material.tunnelSurfaceParams.damageUvScale);
+        hash.addFloat(material.tunnelSurfaceParams.detailUvScale);
+        hash.addFloat(material.tunnelSurfaceParams.baseNormalIntensity);
+        hash.addFloat(material.tunnelSurfaceParams.damagedNormalIntensity);
+        hash.addFloat(material.tunnelSurfaceParams.fillNormalIntensity);
+        hash.addFloat(material.tunnelSurfaceParams.damageBlendSharpness);
+        hash.addFloat(material.tunnelSurfaceParams.damageMaskMultiply);
+        hash.addFloat(material.tunnelSurfaceParams.damageMaskPower);
+        hash.addFloat(material.tunnelSurfaceParams.vertexBlueMulti);
+        hash.addFloat(material.tunnelSurfaceParams.vertexRedMulti);
+        hash.addFloat(material.tunnelSurfaceParams.redMaskUvScale);
+        hash.addFloat(material.tunnelSurfaceParams.damagedRoughnessMulti);
+        hash.addFloat(material.tunnelSurfaceParams.fillBlendRatio);
+        hash.addFloat(material.tunnelSurfaceParams.fillBlendPower);
+        hash.addI32(material.tunnelSurfaceParams.blendMaskTexIndex);
+        hash.addI32(material.tunnelSurfaceParams.damagedAlbedoTexIndex);
+        hash.addI32(material.tunnelSurfaceParams.damagedNormalTexIndex);
+        hash.addI32(material.tunnelSurfaceParams.damagedOrmTexIndex);
+        hash.addI32(material.tunnelSurfaceParams.fillAlbedoTexIndex);
+        hash.addI32(material.tunnelSurfaceParams.fillNormalTexIndex);
         hash.addU8(material.ormChannels.occlusion);
         hash.addU8(material.ormChannels.roughness);
         hash.addU8(material.ormChannels.metallic);
@@ -1530,6 +1573,28 @@ namespace
             pbr.tunnelSurface.roughnessPower = material.tunnelSurfaceParams.roughnessPower;
             pbr.tunnelSurface.metalnessValue = material.tunnelSurfaceParams.metalnessValue;
             pbr.tunnelSurface.dirtRoughness = material.tunnelSurfaceParams.dirtRoughness;
+            pbr.tunnelSurface.primaryUvScale = material.tunnelSurfaceParams.primaryUvScale;
+            pbr.tunnelSurface.normalUvScale = material.tunnelSurfaceParams.normalUvScale;
+            pbr.tunnelSurface.damageUvScale = material.tunnelSurfaceParams.damageUvScale;
+            pbr.tunnelSurface.detailUvScale = material.tunnelSurfaceParams.detailUvScale;
+            pbr.tunnelSurface.baseNormalIntensity = material.tunnelSurfaceParams.baseNormalIntensity;
+            pbr.tunnelSurface.damagedNormalIntensity = material.tunnelSurfaceParams.damagedNormalIntensity;
+            pbr.tunnelSurface.fillNormalIntensity = material.tunnelSurfaceParams.fillNormalIntensity;
+            pbr.tunnelSurface.damageBlendSharpness = material.tunnelSurfaceParams.damageBlendSharpness;
+            pbr.tunnelSurface.damageMaskMultiply = material.tunnelSurfaceParams.damageMaskMultiply;
+            pbr.tunnelSurface.damageMaskPower = material.tunnelSurfaceParams.damageMaskPower;
+            pbr.tunnelSurface.vertexBlueMulti = material.tunnelSurfaceParams.vertexBlueMulti;
+            pbr.tunnelSurface.vertexRedMulti = material.tunnelSurfaceParams.vertexRedMulti;
+            pbr.tunnelSurface.redMaskUvScale = material.tunnelSurfaceParams.redMaskUvScale;
+            pbr.tunnelSurface.damagedRoughnessMulti = material.tunnelSurfaceParams.damagedRoughnessMulti;
+            pbr.tunnelSurface.fillBlendRatio = material.tunnelSurfaceParams.fillBlendRatio;
+            pbr.tunnelSurface.fillBlendPower = material.tunnelSurfaceParams.fillBlendPower;
+            pbr.tunnelSurface.blendMaskTexIndex = mapNormalTextureIndex(material.tunnelSurfaceParams.blendMaskTexIndex);
+            pbr.tunnelSurface.damagedAlbedoTexIndex = mapBaseColorTextureIndex(material.tunnelSurfaceParams.damagedAlbedoTexIndex);
+            pbr.tunnelSurface.damagedNormalTexIndex = mapNormalTextureIndex(material.tunnelSurfaceParams.damagedNormalTexIndex);
+            pbr.tunnelSurface.damagedOrmTexIndex = mapOrmTextureIndex(material.tunnelSurfaceParams.damagedOrmTexIndex);
+            pbr.tunnelSurface.fillAlbedoTexIndex = mapBaseColorTextureIndex(material.tunnelSurfaceParams.fillAlbedoTexIndex);
+            pbr.tunnelSurface.fillNormalTexIndex = mapNormalTextureIndex(material.tunnelSurfaceParams.fillNormalTexIndex);
             if (material.emissionUseAlphaMask)
                 pbr.flags |= HIP_MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK;
             if (material.thinEmissiveSurface)

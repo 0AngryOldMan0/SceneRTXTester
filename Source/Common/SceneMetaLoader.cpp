@@ -820,6 +820,15 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
     }
 }
 
+static SceneMetaMaterial MakeBackendPbrMaterial(const SceneMetaMaterial& src)
+{
+    SceneMetaMaterial out = src;
+    out.auxTex.clear();
+    out.auxScalar.clear();
+    out.auxVec4.clear();
+    return out;
+}
+
     static bool LooksFogLike(std::string_view nameLower)
     {
         return (nameLower.find("fog") != std::string_view::npos) ||
@@ -1033,6 +1042,20 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
                 break;
 
             case SceneMetaMasterMaterialModel::MM_Material_01a:
+                material.tunnelSurfaceParams.roughness =
+                    ReadSceneScalarParam(obj, {"Roughness"}, material.roughness);
+                material.tunnelSurfaceParams.roughnessMulti =
+                    ReadSceneScalarParam(obj, {"Roughness Multi"}, 1.0f);
+                material.tunnelSurfaceParams.roughnessPower =
+                    ReadSceneScalarParam(obj, {"Roughness Power"}, 1.0f);
+                material.tunnelSurfaceParams.metalnessValue =
+                    ReadSceneScalarParam(obj, {"Metalness Value", "Metallic Value", "Metalness"}, material.metallic);
+                material.tunnelSurfaceParams.dirtRoughness =
+                    ReadSceneScalarParam(obj, {"Dirt Roughness"}, 0.9f);
+                material.tunnelSurfaceParams.primaryUvScale =
+                    ReadSceneScalarParam(obj, {"Tex Scale", "Texture Coord"}, 1.0f);
+                break;
+
             case SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a:
                 material.tunnelSurfaceParams.roughness =
                     ReadSceneScalarParam(obj, {"Roughness"}, material.roughness);
@@ -1044,6 +1067,38 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
                     ReadSceneScalarParam(obj, {"Metalness Value", "Metallic Value", "Metalness"}, material.metallic);
                 material.tunnelSurfaceParams.dirtRoughness =
                     ReadSceneScalarParam(obj, {"Dirt Roughness"}, 0.9f);
+                material.tunnelSurfaceParams.primaryUvScale =
+                    ReadSceneScalarParam(obj, {"Tex Scale", "Texture Coord"}, 1.0f);
+                material.tunnelSurfaceParams.normalUvScale =
+                    ReadSceneScalarParam(obj, {"Normal  Scale", "Normal Scale"}, material.tunnelSurfaceParams.primaryUvScale);
+                material.tunnelSurfaceParams.damageUvScale =
+                    ReadSceneScalarParam(obj, {"Texture Coord Damaged Wall"}, material.tunnelSurfaceParams.primaryUvScale);
+                material.tunnelSurfaceParams.detailUvScale =
+                    ReadSceneScalarParam(obj, {"Detail Scale"}, material.tunnelSurfaceParams.normalUvScale);
+                material.tunnelSurfaceParams.baseNormalIntensity =
+                    ReadSceneScalarParam(obj, {"Normal Intensity"}, 1.0f);
+                material.tunnelSurfaceParams.damagedNormalIntensity =
+                    ReadSceneScalarParam(obj, {"Normal Intensity - Blue"}, 1.0f);
+                material.tunnelSurfaceParams.fillNormalIntensity =
+                    ReadSceneScalarParam(obj, {"Normal Intensity Damaged"}, 1.0f);
+                material.tunnelSurfaceParams.damageBlendSharpness =
+                    ReadSceneScalarParam(obj, {"Blend Sharpness Blue", "Damage Blend Sharpness"}, 0.5f);
+                material.tunnelSurfaceParams.damageMaskMultiply =
+                    ReadSceneScalarParam(obj, {"Mutliply Mask"}, 1.0f);
+                material.tunnelSurfaceParams.damageMaskPower =
+                    ReadSceneScalarParam(obj, {"Power of Mask"}, 1.0f);
+                material.tunnelSurfaceParams.vertexBlueMulti =
+                    ReadSceneScalarParam(obj, {"Vertex Color Multi - Blue"}, 1.0f);
+                material.tunnelSurfaceParams.vertexRedMulti =
+                    ReadSceneScalarParam(obj, {"Vertex Color Red Multi", "Vertex Color Multi"}, 1.0f);
+                material.tunnelSurfaceParams.redMaskUvScale =
+                    ReadSceneScalarParam(obj, {"Mask Tiling Red"}, material.tunnelSurfaceParams.damageUvScale);
+                material.tunnelSurfaceParams.damagedRoughnessMulti =
+                    ReadSceneScalarParam(obj, {"Damaged Roughness Multi"}, 1.0f);
+                material.tunnelSurfaceParams.fillBlendRatio =
+                    ReadSceneScalarParam(obj, {"Damaged Heigh Ratio"}, 0.0f);
+                material.tunnelSurfaceParams.fillBlendPower =
+                    ReadSceneScalarParam(obj, {"Damaged Height Map Blend Power"}, 1.0f);
                 break;
 
             default:
@@ -1093,6 +1148,21 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
                 break;
 
             case SceneMetaMasterMaterialModel::MM_Material_01a:
+                material.tunnelSurfaceParams.roughness =
+                    ReadNamedScalarParam(obj, "Roughness", material.roughness);
+                material.tunnelSurfaceParams.roughnessMulti =
+                    ReadNamedScalarParam(obj, "Roughness Multi", 1.0f);
+                material.tunnelSurfaceParams.roughnessPower =
+                    ReadNamedScalarParam(obj, "Roughness Power", 1.0f);
+                material.tunnelSurfaceParams.metalnessValue =
+                    ReadNamedScalarParam(obj, "Metalness Value", material.metallic);
+                material.tunnelSurfaceParams.dirtRoughness =
+                    ReadNamedScalarParam(obj, "Dirt Roughness", 0.9f);
+                material.tunnelSurfaceParams.primaryUvScale =
+                    ReadNamedScalarParam(obj, "Tex Scale",
+                                         ReadNamedScalarParam(obj, "Texture Coord", 1.0f));
+                break;
+
             case SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a:
                 material.tunnelSurfaceParams.roughness =
                     ReadNamedScalarParam(obj, "Roughness", material.roughness);
@@ -1104,6 +1174,42 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
                     ReadNamedScalarParam(obj, "Metalness Value", material.metallic);
                 material.tunnelSurfaceParams.dirtRoughness =
                     ReadNamedScalarParam(obj, "Dirt Roughness", 0.9f);
+                material.tunnelSurfaceParams.primaryUvScale =
+                    ReadNamedScalarParam(obj, "Tex Scale",
+                                         ReadNamedScalarParam(obj, "Texture Coord", 1.0f));
+                material.tunnelSurfaceParams.normalUvScale =
+                    ReadNamedScalarParam(obj, "Normal  Scale",
+                                         ReadNamedScalarParam(obj, "Normal Scale", material.tunnelSurfaceParams.primaryUvScale));
+                material.tunnelSurfaceParams.damageUvScale =
+                    ReadNamedScalarParam(obj, "Texture Coord Damaged Wall", material.tunnelSurfaceParams.primaryUvScale);
+                material.tunnelSurfaceParams.detailUvScale =
+                    ReadNamedScalarParam(obj, "Detail Scale", material.tunnelSurfaceParams.normalUvScale);
+                material.tunnelSurfaceParams.baseNormalIntensity =
+                    ReadNamedScalarParam(obj, "Normal Intensity", 1.0f);
+                material.tunnelSurfaceParams.damagedNormalIntensity =
+                    ReadNamedScalarParam(obj, "Normal Intensity - Blue", 1.0f);
+                material.tunnelSurfaceParams.fillNormalIntensity =
+                    ReadNamedScalarParam(obj, "Normal Intensity Damaged", 1.0f);
+                material.tunnelSurfaceParams.damageBlendSharpness =
+                    ReadNamedScalarParam(obj, "Blend Sharpness Blue",
+                                         ReadNamedScalarParam(obj, "Damage Blend Sharpness", 0.5f));
+                material.tunnelSurfaceParams.damageMaskMultiply =
+                    ReadNamedScalarParam(obj, "Mutliply Mask", 1.0f);
+                material.tunnelSurfaceParams.damageMaskPower =
+                    ReadNamedScalarParam(obj, "Power of Mask", 1.0f);
+                material.tunnelSurfaceParams.vertexBlueMulti =
+                    ReadNamedScalarParam(obj, "Vertex Color Multi - Blue", 1.0f);
+                material.tunnelSurfaceParams.vertexRedMulti =
+                    ReadNamedScalarParam(obj, "Vertex Color Red Multi",
+                                         ReadNamedScalarParam(obj, "Vertex Color Multi", 1.0f));
+                material.tunnelSurfaceParams.redMaskUvScale =
+                    ReadNamedScalarParam(obj, "Mask Tiling Red", material.tunnelSurfaceParams.damageUvScale);
+                material.tunnelSurfaceParams.damagedRoughnessMulti =
+                    ReadNamedScalarParam(obj, "Damaged Roughness Multi", 1.0f);
+                material.tunnelSurfaceParams.fillBlendRatio =
+                    ReadNamedScalarParam(obj, "Damaged Heigh Ratio", 0.0f);
+                material.tunnelSurfaceParams.fillBlendPower =
+                    ReadNamedScalarParam(obj, "Damaged Height Map Blend Power", 1.0f);
                 break;
 
             default:
@@ -1117,21 +1223,38 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
                                                                     AddSrgbTexFn&& addSrgbTexById,
                                                                     AddLinearTexFn&& addLinearTexById)
     {
-        if (material.masterMaterialModel != SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a)
+        if (material.masterMaterialModel == SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a)
+        {
+            material.tunnelFloorParams.concreteFillNormalTexIndex =
+                addLinearTexById(ReadSceneTextureParamId(obj, {"USED_000"}));
+            material.tunnelFloorParams.dirtNormalTexIndex =
+                addLinearTexById(ReadSceneTextureParamId(obj, {"USED_002"}));
+            material.tunnelFloorParams.dirtMaskTexIndex =
+                addLinearTexById(ReadSceneTextureParamId(obj, {"USED_003"}));
+            material.tunnelFloorParams.puddlesMaskTexIndex =
+                addLinearTexById(ReadSceneTextureParamId(obj, {"USED_004"}));
+            material.tunnelFloorParams.dirtAlbedoTexIndex =
+                addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_006"}));
+            material.tunnelFloorParams.concreteFillAlbedoTexIndex =
+                addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_007"}));
+            return;
+        }
+
+        if (material.masterMaterialModel != SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a)
             return;
 
-        material.tunnelFloorParams.concreteFillNormalTexIndex =
+        material.tunnelSurfaceParams.fillNormalTexIndex =
             addLinearTexById(ReadSceneTextureParamId(obj, {"USED_000"}));
-        material.tunnelFloorParams.dirtNormalTexIndex =
-            addLinearTexById(ReadSceneTextureParamId(obj, {"USED_002"}));
-        material.tunnelFloorParams.dirtMaskTexIndex =
+        material.tunnelSurfaceParams.blendMaskTexIndex =
+            addLinearTexById(ReadSceneTextureParamId(obj, {"USED_001"}));
+        material.tunnelSurfaceParams.damagedOrmTexIndex =
             addLinearTexById(ReadSceneTextureParamId(obj, {"USED_003"}));
-        material.tunnelFloorParams.puddlesMaskTexIndex =
+        material.tunnelSurfaceParams.damagedNormalTexIndex =
             addLinearTexById(ReadSceneTextureParamId(obj, {"USED_004"}));
-        material.tunnelFloorParams.dirtAlbedoTexIndex =
-            addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_006"}));
-        material.tunnelFloorParams.concreteFillAlbedoTexIndex =
+        material.tunnelSurfaceParams.damagedAlbedoTexIndex =
             addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_007"}));
+        material.tunnelSurfaceParams.fillAlbedoTexIndex =
+            addSrgbTexById(ReadSceneTextureParamId(obj, {"USED_008"}));
     }
 
     template <typename AddSrgbTexFn, typename AddLinearTexFn>
@@ -1140,21 +1263,38 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
                                                                AddSrgbTexFn&& addSrgbTex,
                                                                AddLinearTexFn&& addLinearTex)
     {
-        if (material.masterMaterialModel != SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a)
+        if (material.masterMaterialModel == SceneMetaMasterMaterialModel::MM_Tunnel_Floor_01a)
+        {
+            material.tunnelFloorParams.concreteFillNormalTexIndex =
+                addLinearTex(ReadTextureParamExportedPath(obj, {"USED_000"}));
+            material.tunnelFloorParams.dirtNormalTexIndex =
+                addLinearTex(ReadTextureParamExportedPath(obj, {"USED_002"}));
+            material.tunnelFloorParams.dirtMaskTexIndex =
+                addLinearTex(ReadTextureParamExportedPath(obj, {"USED_003"}));
+            material.tunnelFloorParams.puddlesMaskTexIndex =
+                addLinearTex(ReadTextureParamExportedPath(obj, {"USED_004"}));
+            material.tunnelFloorParams.dirtAlbedoTexIndex =
+                addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_006"}));
+            material.tunnelFloorParams.concreteFillAlbedoTexIndex =
+                addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_007"}));
+            return;
+        }
+
+        if (material.masterMaterialModel != SceneMetaMasterMaterialModel::MM_Tunnel_Wall_01a)
             return;
 
-        material.tunnelFloorParams.concreteFillNormalTexIndex =
+        material.tunnelSurfaceParams.fillNormalTexIndex =
             addLinearTex(ReadTextureParamExportedPath(obj, {"USED_000"}));
-        material.tunnelFloorParams.dirtNormalTexIndex =
-            addLinearTex(ReadTextureParamExportedPath(obj, {"USED_002"}));
-        material.tunnelFloorParams.dirtMaskTexIndex =
+        material.tunnelSurfaceParams.blendMaskTexIndex =
+            addLinearTex(ReadTextureParamExportedPath(obj, {"USED_001"}));
+        material.tunnelSurfaceParams.damagedOrmTexIndex =
             addLinearTex(ReadTextureParamExportedPath(obj, {"USED_003"}));
-        material.tunnelFloorParams.puddlesMaskTexIndex =
+        material.tunnelSurfaceParams.damagedNormalTexIndex =
             addLinearTex(ReadTextureParamExportedPath(obj, {"USED_004"}));
-        material.tunnelFloorParams.dirtAlbedoTexIndex =
-            addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_006"}));
-        material.tunnelFloorParams.concreteFillAlbedoTexIndex =
+        material.tunnelSurfaceParams.damagedAlbedoTexIndex =
             addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_007"}));
+        material.tunnelSurfaceParams.fillAlbedoTexIndex =
+            addSrgbTex(ReadTextureParamExportedPath(obj, {"USED_008"}));
     }
 
     static float Saturate(float x)
@@ -2786,7 +2926,10 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
             outRes->baseColorTextures = std::move(baseColorTextures);
             outRes->linearTextures    = std::move(linearTextures);
             outRes->materials         = std::move(parsedMaterials);
-            outRes->materialsPBR      = outRes->materials;
+            outRes->materialsPBR.clear();
+            outRes->materialsPBR.reserve(outRes->materials.size());
+            for (const SceneMetaMaterial& material : outRes->materials)
+                outRes->materialsPBR.push_back(MakeBackendPbrMaterial(material));
             outRes->cameras           = std::move(parsedCameras);
             outRes->decals            = std::move(parsedDecals);
             outRes->airDustVolumes    = std::move(parsedAirDustVolumes);
@@ -3494,7 +3637,10 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
         outRes->baseColorTextures = std::move(baseColorTextures);
         outRes->linearTextures    = std::move(linearTextures);
         outRes->materials         = std::move(parsedMaterials);
-        outRes->materialsPBR      = outRes->materials; // keep naming stable for backends
+        outRes->materialsPBR.clear();
+        outRes->materialsPBR.reserve(outRes->materials.size());
+        for (const SceneMetaMaterial& material : outRes->materials)
+            outRes->materialsPBR.push_back(MakeBackendPbrMaterial(material));
         outRes->cameras           = std::move(parsedCameras);
         outRes->decals            = std::move(parsedDecals);
         outRes->worldUnitToMeters = std::max(unitScale, 1.0e-4f);

@@ -53,6 +53,48 @@ On macOS the Metal shader library is also copied to `./build/RayTrace.metallib`,
 ./build/SceneRTXTester Scene/UE5/SubwayTonnel/scene.json
 ```
 
+## Quick Start (VS Code)
+
+The workspace includes pre-configured VS Code tasks and launch configurations for simplified development:
+
+### Build
+
+- Press **Ctrl+Shift+B** (or Cmd+Shift+B on macOS) to open the build menu
+- Select **"Build (Auto Backend, Debug)"** to build with automatic GPU backend detection
+- Or choose a specific backend: **"Build (MSVC, Debug)"**, **"Build (HIP, Debug)"**, etc.
+
+### Run
+
+- Press **Ctrl+Shift+`** to open the integrated terminal
+- Run a task from the Terminal menu or use keyboard shortcuts:
+  - **Ctrl+Shift+D** → Select **"Run SceneRTXTester (with scene)"** → Enter scene file path
+  - Alternatively: **Terminal** → **Run Task** → **"Run SceneRTXTester"**
+
+Or directly from terminal:
+```powershell
+.\run.ps1 Scene/UE5/SubwayTunnel/scene.json -preview
+```
+
+### Debug
+
+- Press **F5** to start debugging with the default launch configuration
+- VS Code will automatically build the project and launch it under the debugger
+- Set breakpoints by clicking on line numbers, then inspect variables as usual
+
+### Available Tasks
+
+| Task | Shortcut | Purpose |
+|------|----------|---------|
+| Build (Auto Backend, Debug) | Ctrl+Shift+B | Default build with auto-detected GPU backend |
+| Build (MSVC, Debug) | via menu | CPU-only build |
+| Build (HIP, Debug) | via menu | AMD GPU with HIP |
+| Build (CUDA, Debug) | via menu | NVIDIA GPU with CUDA |
+| Build (Release) | via menu | Optimized build |
+| Clean Build | via menu | Remove build artifacts and rebuild from scratch |
+| Run SceneRTXTester | Ctrl+Shift+D | Run with scene file (will build if needed) |
+| Run with Custom Args | via menu | Run with custom renderer parameters |
+| Run HIP Debug | via menu | Run HIP with debug output (material inspection) |
+
 ## CMake presets
 
 The repository now includes cross-platform CMake presets:

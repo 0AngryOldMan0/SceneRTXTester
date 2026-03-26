@@ -121,7 +121,28 @@ struct HIPTunnelSurfaceParamsGPU
     float roughnessPower = 1.0f;
     float metalnessValue = 0.0f;
     float dirtRoughness = 0.9f;
-    float _pad0 = 0.0f;
+    float primaryUvScale = 1.0f;
+    float normalUvScale = 1.0f;
+    float damageUvScale = 1.0f;
+    float detailUvScale = 1.0f;
+    float baseNormalIntensity = 1.0f;
+    float damagedNormalIntensity = 1.0f;
+    float fillNormalIntensity = 1.0f;
+    float damageBlendSharpness = 0.5f;
+    float damageMaskMultiply = 1.0f;
+    float damageMaskPower = 1.0f;
+    float vertexBlueMulti = 1.0f;
+    float vertexRedMulti = 1.0f;
+    float redMaskUvScale = 1.0f;
+    float damagedRoughnessMulti = 1.0f;
+    float fillBlendRatio = 0.0f;
+    float fillBlendPower = 1.0f;
+    std::int32_t blendMaskTexIndex = -1;
+    std::int32_t damagedAlbedoTexIndex = -1;
+    std::int32_t damagedNormalTexIndex = -1;
+    std::int32_t damagedOrmTexIndex = -1;
+    std::int32_t fillAlbedoTexIndex = -1;
+    std::int32_t fillNormalTexIndex = -1;
 };
 
 struct HIPMaterialPBRGPU
@@ -315,7 +336,7 @@ struct HIPTextureExecutionProfile
 static_assert(sizeof(HIPSceneInstanceGPU) == 184, "HIPSceneInstanceGPU size must match SceneInstanceGPU");
 static_assert(sizeof(HIPLightGPU) == 76, "HIPLightGPU size must be 76 bytes");
 static_assert(sizeof(HIPMaterialGPU) == 16, "HIPMaterialGPU size must be 16 bytes");
-static_assert(sizeof(HIPMaterialPBRGPU) == 212, "HIPMaterialPBRGPU size must be 212 bytes");
+static_assert(sizeof(HIPMaterialPBRGPU) == 296, "HIPMaterialPBRGPU size must be 296 bytes");
 static_assert(sizeof(HIPDecalGPU) == 128, "HIPDecalGPU size must be 128 bytes");
 static_assert(sizeof(HIPEmissiveTriangleGPU) == 20, "HIPEmissiveTriangleGPU size must be 20 bytes");
 static_assert(sizeof(HIPAirDustVolumeGPU) == 64, "HIPAirDustVolumeGPU size must be 64 bytes");
