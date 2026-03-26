@@ -1,0 +1,32 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.useVsDeveloperEnvironment": "always",
+  "cmake.configureOnOpen": false,
+  "cmake.defaultConfigurePreset": "windows-hip-debug",
+  "cmake.defaultBuildPreset": "windows-hip-debug",
+  "cmake.preferredGenerators": [
+    "NMake Makefiles",
+    "Ninja",
+    "Visual Studio 17 2022"
+  ],
+  "cmake.automaticReconfigure": true,
+  "cmake.showOptionsMovedNotification": false,
+  "editor.formatOnSave": true,
+  "files.trimTrailingWhitespace": true,
+  "search.exclude": {
+    "**/build": true,
+    "**/CMakeFiles": true,
+    "**/.git": true
+  },
+  "files.exclude": {
+    "**/CMakeCache.txt": true,
+    "**/*.ilk": true
+  },
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.formatOnSave": true
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
+}

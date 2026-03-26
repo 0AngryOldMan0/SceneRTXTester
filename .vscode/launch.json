@@ -1,0 +1,75 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run SceneRTXTester (Progressive - final render)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\build\\SceneRTXTester.exe",
+      "args": [
+        "${input:scenePath}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build (HIP, Debug)"
+    },
+    {
+      "name": "Run SceneRTXTester (Preview - quick render)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\build\\SceneRTXTester.exe",
+      "args": [
+        "${input:scenePath}",
+        "-preview"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build (HIP, Debug)"
+    },
+    {
+      "name": "Run SceneRTXTester (with custom args)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\build\\SceneRTXTester.exe",
+      "args": [
+        "${input:scenePath}",
+        "${input:debugArgs}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build (HIP, Debug)"
+    },
+    {
+      "name": "Run SceneRTXTester (HIP Debug)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\build\\SceneRTXTester.exe",
+      "args": [
+        "${input:scenePath}",
+        "-preview",
+        "-hip-debug"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build (HIP, Debug)"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "scenePath",
+      "type": "promptString",
+      "description": "Scene file path (relative or absolute)",
+      "default": "Scene/UE5/SubwayTunnel/scene.json"
+    },
+    {
+      "id": "debugArgs",
+      "type": "promptString",
+      "description": "Additional run arguments (e.g., '-preview' or '1920 1080 10')",
+      "default": "-preview"
+    }
+  ]
+}
