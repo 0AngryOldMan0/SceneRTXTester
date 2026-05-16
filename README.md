@@ -1,9 +1,5 @@
 Project for a custom ray tracer.
 
-## Integrated Terminal Workflow (VS Code)
-
-The project is configured to run through the **integrated terminal** (not Debug Console).
-
 ### macOS (Metal)
 
 ```bash
