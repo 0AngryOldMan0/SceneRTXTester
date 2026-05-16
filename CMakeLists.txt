@@ -367,6 +367,7 @@ if(SCENERTX_ENABLE_TESTING)
             tests/integration/OBJLoaderIntegrationTests.cpp
             tests/integration/SceneJSONLoaderIntegrationTests.cpp
             tests/system/ScenePipelineSmokeTests.cpp
+            tests/system/VisualRegressionTests.cpp
         )
 
         set(SCENERTX_TEST_RUNTIME_SOURCES
@@ -401,6 +402,10 @@ if(SCENERTX_ENABLE_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration
         )
 
+        target_compile_definitions(SceneRTXTesterTests PRIVATE
+            SCENERTX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+
         if(MSVC)
             target_compile_options(SceneRTXTesterTests PRIVATE /W4 /permissive-)
         else()
@@ -411,5 +416,6 @@ if(SCENERTX_ENABLE_TESTING)
         add_test(NAME SceneRTXTester.UnitOnly COMMAND SceneRTXTesterTests Unit)
         add_test(NAME SceneRTXTester.IntegrationOnly COMMAND SceneRTXTesterTests Integration)
         add_test(NAME SceneRTXTester.SystemSmoke COMMAND SceneRTXTesterTests SystemSmoke)
+        add_test(NAME SceneRTXTester.VisualRegression COMMAND SceneRTXTesterTests VisualRegression)
     endif()
 endif()
