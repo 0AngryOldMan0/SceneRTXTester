@@ -1,6 +1,11 @@
 Project for a custom ray tracer.
 
-### macOS (Metal)
+### Сборка на macOS (Metal)
+Предварительно необходимо установить xcode, стандартный для macOS, ninja для cmake, а также применить команду:
+```bash
+ xcodebuild -downloadComponent MetalToolchain
+```
+Так как на macOS используется проприетарный графический пайплайн - Metal, отличный от HIP/CUDA, то нативно, он естественно не установлен. Для сборки проекта нужно прописать следующую команду:
 
 ```bash
 cmake -S . -B build \
@@ -8,12 +13,26 @@ cmake -S . -B build \
   -DUSE_METAL_RENDERER=ON \
   -DUSE_HIP_RENDERER=OFF \
   -DUSE_CUDA_RENDERER=OFF
+```
+где:
+-S - отвечает за корневой каталог с исходным кодом проекта, где находится CMakeLists.
+. - исходя из правил файловых систем отвечает за текущую директорию
+-B <путь до каталога> - указывает каталог, в котором CMake сгенерирует все артефакты сборки: Makefile (или проектные файлы IDE), CMakeCache.txt, CMakeFiles и т.д.
+-DCMAKE_BUILD_TYPE=Debug - отвечает за тип сборки, в нашем случае пока что дебаг режим, так как до релиза еще далеко.
+Далее идет набор флагов для сборки под конкретную платформу, у соответствующего флага ставится значение "ON":
+-DUSE_METAL_RENDERER=ON - если сборка под Mac
+-DUSE_HIP_RENDERER=OFF - если сборка под windows с видеократой от фирмы AMD
+-DUSE_CUDA_RENDERER=OFF - если сборка под windows с видеократой от фирмы NVIDIA
 
+Для запуска программы, после сборки используем следующую команду:
+```bash
 cmake --build build
 ./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -preview 1920 1080 10
 ```
+Необходимо указать путь до сгенерированного бинарника, в нашем случае он находится в папке build, указать полный путь до сцены (данное решение временное и будет изменено в дальнейшем), указать один из аргументов запуска и, при необходимости, задать разрешение рендера и число лучей на кадр.
 
-### Windows (HIP)
+### Сборка на Windows (HIP)
+Предварительно необходимо установить HIP, через профессиональный драйвер AMD, скачав его с официального сайта, cmake, и применить схожую команду:
 
 ```powershell
 cmake -S . -B build `
@@ -23,30 +42,25 @@ cmake -S . -B build `
   -DUSE_METAL_RENDERER=OFF `
   -DCMAKE_PREFIX_PATH=$env:HIP_PATH `
   -DCMAKE_HIP_ARCHITECTURES=gfx1030
+```
+Дополнив ее указанием пути к установленному HIP, и архитектуру установленной видеокарты, в нашем случае RX6900XT
 
+Команда для запуска не отличается от оной на macOS
+```powershell
 cmake --build build
 .\build\SceneRTXTester.exe Scene/UE5/SubwayTunnel/scene.json -preview 1920 1080 10
 ```
 
-## Launch Argument Order
+## Аргументы для запуска проекта
 
-Keep this order:
-
+Порядок запуска подчиняется следующему условию:
 ```text
 <binary> <scene_path> <render_type> <resolution_and_optional_spp>
 ```
-
-Examples:
-
-```text
-./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -preview
-./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -progressive 1920 1080
-./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -preview 1920 1080 10
-./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -textureDebug
-```
-
-`-textureDebug` exports additional texture-debug passes (normals, AO, roughness, metallic, emissive, etc.) alongside the beauty frame.
-Legacy `-hip-debug` is still accepted as an alias, but deprecated.
+В качестве <render_type> можно указывать следующие параметры:
+-preview - кадр с полным набором PBR текстур, и освещением
+-progressive - прогрессивный кадр, в коотором учитывется повторная обработка лучей и денойзинг
+-textureDebug - полный кадр, и набор кадров в которых отрисовываются только определенные текстуры (альбедо, нормали, и прочее).
 
 ## VS Code Tasks
 
