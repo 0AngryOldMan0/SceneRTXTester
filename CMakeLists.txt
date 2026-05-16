@@ -28,6 +28,7 @@ endif()
 option(USE_CUDA_RENDERER  "Enable CUDA renderer for NVIDIA GPUs" ${SCENERTX_DEFAULT_CUDA})
 option(USE_HIP_RENDERER   "Enable HIP renderer for AMD GPUs" ${SCENERTX_DEFAULT_HIP})
 option(USE_METAL_RENDERER "Enable Metal renderer for APPLE GPU" ${SCENERTX_DEFAULT_METAL})
+option(SCENERTX_ENABLE_BENCHMARKS "Build microbenchmark executable for CPU pipeline" ON)
 
 if(USE_HIP_RENDERER AND USE_CUDA_RENDERER)
     message(WARNING "Building with both HIP and CUDA enabled is not validated. Prefer one Windows GPU backend per build preset.")
@@ -313,6 +314,39 @@ endif()
 # -----------------------
 if(WIN32 AND USE_CUDA_RENDERER)
     target_compile_definitions(SceneRTXTester PRIVATE USE_CUDA_RENDERER=1)
+endif()
+
+# -----------------------
+# Benchmarks (CPU-only)
+# -----------------------
+if(SCENERTX_ENABLE_BENCHMARKS)
+    set(SCENERTX_BENCHMARK_SOURCES
+        benchmarks/SceneBenchmarkMain.cpp
+        Source/Common/SceneLoader.cpp
+        Source/Common/OBJLoader.cpp
+        Source/Common/SceneJSONLoader.cpp
+        Source/Common/SceneObject.cpp
+        Source/Common/BVHBuilder.cpp
+    )
+
+    add_executable(SceneRTXBenchmarks ${SCENERTX_BENCHMARK_SOURCES})
+
+    target_include_directories(SceneRTXBenchmarks PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Headers
+        ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Classes
+        ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Structures
+        ${CMAKE_CURRENT_SOURCE_DIR}/Headers/ShaderSpecific
+        ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Patterns
+        ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs
+        ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs/json-develop/single_include
+        ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs/stb-master
+    )
+
+    if(MSVC)
+        target_compile_options(SceneRTXBenchmarks PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(SceneRTXBenchmarks PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 # -----------------------

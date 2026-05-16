@@ -100,3 +100,24 @@ ctest --test-dir build --output-on-failure
 ```
 
 Подробная стратегия и карта текущего покрытия: [TESTING.md](TESTING.md).
+
+## Performance Benchmarks
+
+В проект добавлен отдельный CPU-only benchmark таргет `SceneRTXBenchmarks` для микробенчмарков:
+
+- `BVHBuilder` (BottomUp / TopDown / SAH) на больших синтетических мешах.
+- `OBJLoader` и `SceneJSONLoader` на больших сценах.
+
+Запуск:
+
+```bash
+cmake -S . -B build
+cmake --build build --target SceneRTXBenchmarks
+./build/SceneRTXBenchmarks
+```
+
+Пример с параметрами:
+
+```bash
+./build/SceneRTXBenchmarks --iterations 12 --warmup 3 --bvh-triangles 5000
+```
