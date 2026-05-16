@@ -707,7 +707,9 @@ struct MaterialGPU_PBR
 
     int32_t specialTex0Index;
     int32_t specialTex1Index;
-    int32_t _pad0;
+    int32_t ormChannelOcclusion;
+    int32_t ormChannelRoughness;
+    int32_t ormChannelMetallic;
     int32_t _pad1;
 
     float   specialScalar0;
@@ -719,7 +721,7 @@ struct MaterialGPU_PBR
     float   _pad2;
     float   _pad3;
 };
-static_assert(sizeof(MaterialGPU_PBR) == 112, "MaterialGPU_PBR size must be 112 bytes");
+static_assert(sizeof(MaterialGPU_PBR) == 120, "MaterialGPU_PBR size must be 120 bytes");
 static_assert(sizeof(MaterialGPU) == 16, "MaterialGPU size must be 16 bytes");
 
 struct DecalGPU
@@ -737,7 +739,7 @@ struct DecalGPU
     int32_t opacityTexIndex;
     int32_t detailTexIndex;
     int32_t flags;
-    int32_t _pad0;
+    int32_t ormChannelRoughness;
 
     float baseColorX, baseColorY, baseColorZ, roughnessBias;
     float tilingU, tilingV, opacityPower, normalIntensity;
@@ -964,6 +966,8 @@ static id<MTLTexture> LoadTextureBGRA8_Unorm(id<MTLDevice> dev, const std::strin
     }
 
     const size_t bytesPerRow = w * 4;
+    std::vector<uint8_t> pixels;
+    pixels.resize(w * h * 4);
 
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     if (!cs)
@@ -972,8 +976,10 @@ static id<MTLTexture> LoadTextureBGRA8_Unorm(id<MTLDevice> dev, const std::strin
         return nil;
     }
 
-    CGContextRef ctx = CGBitmapContextCreate(nullptr, w, h, 8, bytesPerRow, cs,
-                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Little);
+    // Keep linear and sRGB loaders byte-compatible (BGRA in memory).
+    // Using PremultipliedLast+32Little can reorder channels for data maps.
+    CGContextRef ctx = CGBitmapContextCreate(pixels.data(), w, h, 8, bytesPerRow, cs,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
     CGColorSpaceRelease(cs);
 
     if (!ctx)
@@ -984,13 +990,6 @@ static id<MTLTexture> LoadTextureBGRA8_Unorm(id<MTLDevice> dev, const std::strin
 
     CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), img);
     CGImageRelease(img);
-
-    uint8_t *data = (uint8_t*)CGBitmapContextGetData(ctx);
-    if (!data)
-    {
-        CGContextRelease(ctx);
-        return nil;
-    }
 
     MTLTextureDescriptor *desc =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -1007,7 +1006,7 @@ static id<MTLTexture> LoadTextureBGRA8_Unorm(id<MTLDevice> dev, const std::strin
     }
 
     MTLRegion region = MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h);
-    [tex replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:bytesPerRow];
+    [tex replaceRegion:region mipmapLevel:0 withBytes:pixels.data() bytesPerRow:bytesPerRow];
 
     CGContextRelease(ctx);
     return tex;
@@ -1235,7 +1234,9 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         mp.specialModel      = sm.specialModel;
         mp.specialTex0Index  = mapSceneTex(sm.specialTex0Index, false);
         mp.specialTex1Index  = mapSceneTex(sm.specialTex1Index, false);
-        mp._pad0             = 0;
+        mp.ormChannelOcclusion = std::clamp<int>(sm.ormChannels.occlusion, 0, 3);
+        mp.ormChannelRoughness = std::clamp<int>(sm.ormChannels.roughness, 0, 3);
+        mp.ormChannelMetallic  = std::clamp<int>(sm.ormChannels.metallic, 0, 3);
         mp._pad1             = 0;
         mp.specialScalar0    = sm.specialScalar0;
         mp.specialScalar1    = sm.specialScalar1;
@@ -1273,6 +1274,28 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
 
     if (matsPBR.empty())
         matsPBR.resize(1);
+
+    if (const char* dumpPbrEnv = std::getenv("SCENERTX_METAL_DUMP_PBR_CHANNELS");
+        dumpPbrEnv != nullptr && dumpPbrEnv[0] != '\0' && dumpPbrEnv[0] != '0')
+    {
+        const std::size_t dumpCount = std::min<std::size_t>(matsPBR.size(), 24u);
+        for (std::size_t i = 0; i < dumpCount; ++i)
+        {
+            const MaterialGPU_PBR& mp = matsPBR[i];
+            std::cerr << "MetalRenderer: mat[" << i << "]"
+                      << " ormTex=" << mp.ormTexIndex
+                      << " ormUv=" << mp.ormUvSet
+                      << " ormChannels=("
+                      << mp.ormChannelOcclusion << ","
+                      << mp.ormChannelRoughness << ","
+                      << mp.ormChannelMetallic << ")"
+                      << " roughTex=" << mp.roughnessTexIndex
+                      << " metallicTex=" << mp.metallicTexIndex
+                      << " baseTex=" << mp.baseColorTexIndex
+                      << " name='" << metaRes->materials[i].name << "'"
+                      << "\n";
+        }
+    }
 
     // --- GPU buffers ---
     g_materialBuffer =
@@ -1875,7 +1898,7 @@ static std::vector<DecalGPU> BuildDecalTable(const SceneMetaResources *metaRes)
         d.opacityTexIndex = mapAny(sm.decalOpacityTexIndex, sm.decalOpacityTexIsLinear);
         d.detailTexIndex = mapAny(sm.decalDetailTexIndex, sm.decalDetailTexIsLinear);
         d.flags = 0;
-        d._pad0 = 0;
+        d.ormChannelRoughness = std::clamp<int>(sm.ormChannels.roughness, 0, 3);
         d.baseColorX = sm.baseColor.x;
         d.baseColorY = sm.baseColor.y;
         d.baseColorZ = sm.baseColor.z;

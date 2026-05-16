@@ -512,6 +512,34 @@ static bool IsUtilityTexturePathOrName(std::string_view s)
     });
 }
 
+static void ApplyPackedOrmChannelConventionHint(const std::string& hint,
+                                                SceneMetaOrmChannels& channels)
+{
+    if (hint.empty())
+        return;
+
+    const std::string lower = ToLowerCopy(hint);
+
+    // Common packed map convention used in this scene export:
+    // RMA = R(roughness), G(metallic), B(ambient occlusion).
+    if (ContainsAny(lower, {"_rma", "rma_", "/rma", "rma."}))
+    {
+        channels.occlusion = 2;
+        channels.roughness = 0;
+        channels.metallic  = 1;
+        return;
+    }
+
+    // UE/glTF-style default ORM/ARM convention:
+    // R(ambient occlusion), G(roughness), B(metallic).
+    if (ContainsAny(lower, {"_orm", "orm_", "/orm", "orm.", "_arm", "arm_", "/arm", "arm."}))
+    {
+        channels.occlusion = 0;
+        channels.roughness = 1;
+        channels.metallic  = 2;
+    }
+}
+
 static bool IsExplicitEmissiveMaterialName(std::string_view s)
 {
     return ContainsAny(s, {
@@ -781,6 +809,10 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
             << "SceneMetaLoader: material payload name='" << material.name
             << "' model=" << MasterMaterialModelName(material.masterMaterialModel)
             << " base='" << material.baseMaterialAssetPath << "'"
+            << " ormChannels=("
+            << static_cast<int>(material.ormChannels.occlusion) << ","
+            << static_cast<int>(material.ormChannels.roughness) << ","
+            << static_cast<int>(material.ormChannels.metallic) << ")"
             << " auxTex=" << material.auxTex.size()
             << " auxScalar=" << material.auxScalar.size()
             << " auxVec4=" << material.auxVec4.size()
@@ -2287,9 +2319,30 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 if (m.normalTexIndex < 0)
                     m.normalTexIndex = addLinearTexById(ReadSceneTextureParamId(jm, {"Normal", "Normal Map", "MaterialExpressionTextureSampleParameter2D_6", "USED_000"}));
 
-                m.ormTexIndex = addLinearTexById(ReadStringField(jm, "orm_texture_id", std::string{}));
-                if (m.ormTexIndex < 0)
-                    m.ormTexIndex = addLinearTexById(ReadSceneTextureParamId(jm, {"RMA", "Roughness"}));
+                std::string ormTexId = ReadStringField(jm, "orm_texture_id", std::string{});
+                if (ormTexId.empty())
+                    ormTexId = ReadSceneTextureParamId(jm, {"RMA", "Roughness"});
+                m.ormTexIndex = addLinearTexById(ormTexId);
+                if (!ormTexId.empty())
+                {
+                    if (auto itName = textureNameById.find(ormTexId);
+                        itName != textureNameById.end() && !itName->second.empty())
+                    {
+                        ApplyPackedOrmChannelConventionHint(itName->second, m.ormChannels);
+                    }
+                    else if (auto itPath = texturePathById.find(ormTexId);
+                             itPath != texturePathById.end() && !itPath->second.empty())
+                    {
+                        ApplyPackedOrmChannelConventionHint(itPath->second, m.ormChannels);
+                    }
+                }
+                if (auto itOC = jm.find("orm_channels"); itOC != jm.end() && itOC->is_object())
+                {
+                    const json& ch = *itOC;
+                    m.ormChannels.occlusion = ChannelFromString(ch, "occlusion", m.ormChannels.occlusion);
+                    m.ormChannels.roughness = ChannelFromString(ch, "roughness", m.ormChannels.roughness);
+                    m.ormChannels.metallic  = ChannelFromString(ch, "metallic",  m.ormChannels.metallic);
+                }
 
                 m.roughnessTexIndex = addLinearTexById(ReadStringField(jm, "roughness_texture_id", std::string{}));
                 m.metallicTexIndex  = addLinearTexById(ReadStringField(jm, "metallic_texture_id", std::string{}));
@@ -3309,6 +3362,9 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             m.roughnessTexIndex = addLinearTex(ReadStringField(jm, "roughness_texture", std::string{}));
             m.metallicTexIndex  = addLinearTex(ReadStringField(jm, "metallic_texture", std::string{}));
             m.occlusionTexIndex = addLinearTex(ReadStringField(jm, "occlusion_texture", std::string{}));
+            if (m.ormTexIndex >= 0 && static_cast<std::size_t>(m.ormTexIndex) < linearTextures.size())
+                ApplyPackedOrmChannelConventionHint(linearTextures[static_cast<std::size_t>(m.ormTexIndex)],
+                                                    m.ormChannels);
             PopulateTunnelMasterMaterialTexturesFromLegacy(jm, m, addSrgbTex, addLinearTex);
             SanitizeStandalonePbrTextureOverrides(m);
 

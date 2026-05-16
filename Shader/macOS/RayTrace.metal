@@ -177,6 +177,7 @@ struct HitInfo
 
     float  metallic;
     float  roughness;
+    float3 barycentrics;
 
     float2 uv0;
     float2 uv1;
@@ -244,7 +245,9 @@ struct MaterialGPU_PBR
 
     int specialTex0Index;
     int specialTex1Index;
-    int _pad0;
+    int ormChannelOcclusion;
+    int ormChannelRoughness;
+    int ormChannelMetallic;
     int _pad1;
 
     float specialScalar0;
@@ -279,7 +282,7 @@ struct DecalGPU
     int opacityTexIndex;
     int detailTexIndex;
     int flags;
-    int _pad0;
+    int ormChannelRoughness;
 
     float baseColorX, baseColorY, baseColorZ, roughnessBias;
     float tilingU, tilingV, opacityPower, normalIntensity;
@@ -723,6 +726,48 @@ inline float2 selectUvSet(float2 uv0, float2 uv1, float2 uv2, int uvSet)
     return uv0;
 }
 
+inline float decodePackedSignedUnit10(uint bits)
+{
+    return float(bits & 0x3FFu) * (2.0f / 1023.0f) - 1.0f;
+}
+
+inline float3 decodePackedDirection10(uint packed)
+{
+    return float3(decodePackedSignedUnit10(packed),
+                  decodePackedSignedUnit10(packed >> 10),
+                  decodePackedSignedUnit10(packed >> 20));
+}
+
+inline float3 triangleNormalVertex(const device Triangle& tri, int vertexIndex)
+{
+    const int vertexIdx = clamp(vertexIndex, 0, 2);
+    const float3 n = decodePackedDirection10(tri.vertexNormal[vertexIdx]);
+    const float len2 = dot(n, n);
+    if (len2 > 1.0e-16f)
+        return safeNormalize(n);
+    return safeNormalize(float3(tri.normal));
+}
+
+inline float4 triangleTangentVertex(const device Triangle& tri, int vertexIndex)
+{
+    const int vertexIdx = clamp(vertexIndex, 0, 2);
+    const uint packed = tri.vertexTangent[vertexIdx];
+    const float3 tangent = decodePackedDirection10(packed);
+    const float handedness = (((packed >> 30) & 0x1u) != 0u) ? -1.0f : 1.0f;
+    return float4(tangent, handedness);
+}
+
+inline float3 triangleSampleVertexNormal(const device Triangle& tri,
+                                         float b0,
+                                         float b1,
+                                         float b2)
+{
+    const float3 n0 = triangleNormalVertex(tri, 0);
+    const float3 n1 = triangleNormalVertex(tri, 1);
+    const float3 n2 = triangleNormalVertex(tri, 2);
+    return safeNormalize(n0 * b0 + n1 * b1 + n2 * b2);
+}
+
 inline void computeTangentBasis(const device Triangle* triangles,
                                 int                   triIndex,
                                 int                   uvSet,
@@ -764,39 +809,98 @@ inline void computeTangentBasis(const device Triangle* triangles,
     B = safeNormalize(cross(N, T) * handedness);
 }
 
+inline bool computeExportedTangentBasis(const device Triangle* triangles,
+                                        int triIndex,
+                                        float3 barycentrics,
+                                        float3 localN,
+                                        thread float3& T,
+                                        thread float3& B)
+{
+    const device Triangle& tri = triangles[triIndex];
+    const float4 t0 = triangleTangentVertex(tri, 0);
+    const float4 t1 = triangleTangentVertex(tri, 1);
+    const float4 t2 = triangleTangentVertex(tri, 2);
+
+    float3 tangent = t0.xyz * barycentrics.x +
+                     t1.xyz * barycentrics.y +
+                     t2.xyz * barycentrics.z;
+    tangent = tangent - localN * dot(localN, tangent);
+    if (dot(tangent, tangent) <= 1.0e-8f)
+        return false;
+
+    T = safeNormalize(tangent);
+    float handedness = t0.w * barycentrics.x + t1.w * barycentrics.y + t2.w * barycentrics.z;
+    if (fabs(handedness) <= 1.0e-4f)
+        handedness = (t0.w < 0.0f || t1.w < 0.0f || t2.w < 0.0f) ? -1.0f : 1.0f;
+    else
+        handedness = (handedness < 0.0f) ? -1.0f : 1.0f;
+
+    B = safeNormalize(cross(localN, T) * handedness);
+    return dot(B, B) > 1.0e-8f;
+}
+
 inline void computeTangentBasisInstanced(const device Triangle* triangles,
                                          const device SceneInstanceGPU* instances,
                                          int instanceIndex,
                                          int triIndex,
                                          int uvSet,
+                                         float3 barycentrics,
                                          float3 N,
                                          thread float3& T,
                                          thread float3& B)
 {
-    float3 localN = safeNormalize(float3(triangles[triIndex].normal));
-    computeTangentBasis(triangles, triIndex, uvSet, localN, T, B);
+    const float3 localN = triangleSampleVertexNormal(triangles[triIndex],
+                                                     barycentrics.x,
+                                                     barycentrics.y,
+                                                     barycentrics.z);
+
+    float3 localT = float3(0.0f);
+    float3 localB = float3(0.0f);
+    if (!computeExportedTangentBasis(triangles, triIndex, barycentrics, localN, localT, localB))
+        computeTangentBasis(triangles, triIndex, sanitizeUvSet(uvSet), localN, localT, localB);
+
+    float3 worldT = localT;
+    float3 worldB = localB;
     if (instances != nullptr && instanceIndex >= 0)
     {
         const device SceneInstanceGPU &inst = instances[instanceIndex];
-        T = safeNormalize(transformDirectionObjectToWorld(inst, T));
-        T = safeNormalize(T - N * dot(N, T));
-        float handedness = (dot(cross(N, T), B) < 0.0f) ? -1.0f : 1.0f;
-        B = safeNormalize(cross(N, T) * handedness);
+        worldT = transformDirectionObjectToWorld(inst, localT);
+        worldB = transformDirectionObjectToWorld(inst, localB);
     }
+
+    T = worldT - N * dot(N, worldT);
+    if (dot(T, T) <= 1.0e-8f)
+    {
+        buildOrthonormalBasis(N, T, B);
+        return;
+    }
+    T = safeNormalize(T);
+
+    worldB = worldB - N * dot(N, worldB) - T * dot(T, worldB);
+    if (dot(worldB, worldB) <= 1.0e-8f)
+    {
+        B = safeNormalize(cross(N, T));
+        return;
+    }
+
+    worldB = safeNormalize(worldB);
+    const float handedness = (dot(cross(N, T), worldB) < 0.0f) ? -1.0f : 1.0f;
+    B = safeNormalize(cross(N, T) * handedness);
 }
 
 inline float3 sampleNormalMapInstanced(int normalTexIndex,
                               int normalUvSet,
                               float2 uv,
-                              float3 Ng,
+                              float3 shadingNormal,
                               const device Triangle* triangles,
                               const device SceneInstanceGPU* instances,
                               int instanceIndex,
                               int triIndex,
+                              float3 barycentrics,
                               const array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures)
 {
     if (normalTexIndex < 0 || uint(normalTexIndex) >= MAX_BASE_TEX)
-        return Ng;
+        return shadingNormal;
 
     float2 uvW = fract(uv);
 
@@ -805,9 +909,17 @@ inline float3 sampleNormalMapInstanced(int normalTexIndex,
     nTex = safeNormalize(nTex);
 
     float3 T, B;
-    computeTangentBasisInstanced(triangles, instances, instanceIndex, triIndex, normalUvSet, Ng, T, B);
+    computeTangentBasisInstanced(triangles,
+                                 instances,
+                                 instanceIndex,
+                                 triIndex,
+                                 normalUvSet,
+                                 barycentrics,
+                                 shadingNormal,
+                                 T,
+                                 B);
 
-    float3 Ns = safeNormalize(nTex.x * T + nTex.y * B + nTex.z * Ng);
+    float3 Ns = safeNormalize(nTex.x * T + nTex.y * B + nTex.z * shadingNormal);
     return Ns;
 }
 
@@ -829,6 +941,18 @@ inline float sampleR(int texIndex,
     if (texIndex < 0 || uint(texIndex) >= MAX_BASE_TEX)
         return fallback;
     return sceneTextures[uint(texIndex)].sample(g_texSampler, fract(uv)).r;
+}
+
+inline float sampledChannel(float4 texel, int channel, float fallback)
+{
+    switch (channel)
+    {
+        case 0: return texel.r;
+        case 1: return texel.g;
+        case 2: return texel.b;
+        case 3: return texel.a;
+        default: return fallback;
+    }
 }
 
 inline float sampleEmissiveMask(float4 texel)
@@ -881,8 +1005,11 @@ inline float3 uvChecker(float2 uv, float scale)
 
 inline float3 normalToRGB(float3 n)
 {
-    n = normalize(n);
-    return clamp(n * 0.5f + 0.5f, 0.0f, 1.0f);
+    // Scene export uses UE->RH conversion with mirrored Y.
+    // Flip Y in debug visualization to match UE WorldNormal buffer orientation.
+    float3 ueWorldNormal = float3(n.x, -n.y, n.z);
+    ueWorldNormal = normalize(ueWorldNormal);
+    return clamp(ueWorldNormal * 0.5f + 0.5f, 0.0f, 1.0f);
 }
 
 inline float3 hashColorFromInt(int v)
@@ -1184,6 +1311,7 @@ inline HitInfo traceRayBVH(const device BVHNode   *nodes,
     result.emission  = float3(0.0f);
     result.metallic  = 0.0f;
     result.roughness = 0.5f;
+    result.barycentrics = float3(1.0f, 0.0f, 0.0f);
 
     if (nodeCount == 0u ||
         rootIndex < 0  ||
@@ -1278,6 +1406,7 @@ inline HitInfo traceRayBVH(const device BVHNode   *nodes,
 
                 // Интерполяция UV по барицентрикам
                 float wHit = 1.0f - uHit - vHit;
+                result.barycentrics = float3(wHit, uHit, vHit);
                 result.uv0 = triangleSampleUvSet(tri, wHit, uHit, vHit, 0);
                 result.uv1 = triangleSampleUvSet(tri, wHit, uHit, vHit, 1);
                 result.uv2 = triangleSampleUvSet(tri, wHit, uHit, vHit, 2);
@@ -1588,6 +1717,7 @@ inline HitInfo traceRaySceneBVH(const device BVHNode *tlasNodes,
     result.emission = float3(0.0f);
     result.metallic = 0.0f;
     result.roughness = 0.5f;
+    result.barycentrics = float3(1.0f, 0.0f, 0.0f);
     result.uv0 = float2(0.0f);
     result.uv1 = float2(0.0f);
     result.uv2 = float2(0.0f);
@@ -1869,6 +1999,30 @@ inline float3 triangleFaceNormal(const device Triangle &tri)
     float len2 = dot(n, n);
     if (len2 > 1e-16f) return normalize(n);
     return normalize(float3(tri.normal));
+}
+
+inline float3 triangleFaceNormalInstanced(const device Triangle *triangles,
+                                          const device SceneInstanceGPU *instances,
+                                          int instanceIndex,
+                                          int triIndex)
+{
+    float3 n = triangleFaceNormal(triangles[triIndex]);
+    if (instances != nullptr && instanceIndex >= 0)
+        n = safeNormalize(transformNormalObjectToWorld(instances[instanceIndex], n));
+    return n;
+}
+
+inline float3 triangleSampleVertexNormalInstanced(const device Triangle *triangles,
+                                                  const device SceneInstanceGPU *instances,
+                                                  int instanceIndex,
+                                                  int triIndex,
+                                                  float3 barycentrics)
+{
+    const device Triangle &tri = triangles[triIndex];
+    float3 n = triangleSampleVertexNormal(tri, barycentrics.x, barycentrics.y, barycentrics.z);
+    if (instances != nullptr && instanceIndex >= 0)
+        n = safeNormalize(transformNormalObjectToWorld(instances[instanceIndex], n));
+    return n;
 }
 
 inline float3 resolveTriangleEmissionTextured(const device Triangle *triangles,
@@ -2347,8 +2501,9 @@ inline void applyProjectedDecalsPrimary(float3 hitPos,
         float decalRoughness = clamp(roughness + d.roughnessBias, 0.02f, 0.98f);
         if (d.ormTexIndex >= 0 && uint(d.ormTexIndex) < MAX_BASE_TEX)
         {
-            float3 orm = sceneTextures[uint(d.ormTexIndex)].sample(g_texSampler, uv).rgb;
-            decalRoughness = clamp(orm.g + d.roughnessBias, 0.02f, 0.98f);
+            float4 orm = sceneTextures[uint(d.ormTexIndex)].sample(g_texSampler, uv);
+            decalRoughness = clamp(sampledChannel(orm, d.ormChannelRoughness, orm.g) + d.roughnessBias,
+                                   0.02f, 0.98f);
         }
         else if (d.roughnessTexIndex >= 0 && uint(d.roughnessTexIndex) < MAX_BASE_TEX)
         {
@@ -3278,8 +3433,18 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             }
 
             float3 hitPos = hit.position;
-            float3 NgRaw = normalize(hit.normal);
-            float3 N = NgRaw;
+            const float3 barycentrics = hit.barycentrics;
+            const float3 NgRaw = triangleFaceNormalInstanced(triangles,
+                                                              instances,
+                                                              hit.instanceIndex,
+                                                              hit.triIndex);
+            float3 N = triangleSampleVertexNormalInstanced(triangles,
+                                                           instances,
+                                                           hit.instanceIndex,
+                                                           hit.triIndex,
+                                                           barycentrics);
+            if (dot(N, N) <= 1.0e-8f)
+                N = safeNormalize(hit.normal);
 
             float3 baseColor = hit.color;
             float3 emissive  = hit.emission;
@@ -3304,7 +3469,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             bool hasRoughnessTex = false;
             bool hasMetallicTex  = false;
 
-            float3 Ng = N;
+            float3 Ng = NgRaw;
             float3 Ns = N;
 
             bool hasMatPBR = (materialsPBR != nullptr) && (materialPBRCount > 0u) && (matId >= 0) && (uint(matId) < materialPBRCount);
@@ -3318,6 +3483,9 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 const float2 uvRoughness = fract(selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet));
                 const float2 uvMetallic  = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet));
                 const float2 uvOcclusion = fract(selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet));
+                const int ormChannelAO        = mp.ormChannelOcclusion;
+                const int ormChannelRoughness = mp.ormChannelRoughness;
+                const int ormChannelMetallic  = mp.ormChannelMetallic;
                 uv = uvBase;
                 if (mp.baseColorTexIndex >= 0 && uint(mp.baseColorTexIndex) < MAX_BASE_TEX)
                 {
@@ -3328,11 +3496,11 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 }
                 if (mp.ormTexIndex >= 0 && uint(mp.ormTexIndex) < MAX_BASE_TEX)
                 {
-                    float3 orm = sceneTextures[uint(mp.ormTexIndex)].sample(g_texSampler, uvOrm).rgb;
+                    float4 orm = sceneTextures[uint(mp.ormTexIndex)].sample(g_texSampler, uvOrm);
                     hasORMTex = true;
-                    ao = clamp01(orm.r);
-                    roughness = clamp(orm.g, 0.02f, 0.98f);
-                    metallic = clamp01(orm.b);
+                    ao = clamp01(sampledChannel(orm, ormChannelAO, ao));
+                    roughness = clamp(sampledChannel(orm, ormChannelRoughness, roughness), 0.02f, 0.98f);
+                    metallic = clamp01(sampledChannel(orm, ormChannelMetallic, metallic));
                 }
                 if (mp.roughnessTexIndex >= 0 && uint(mp.roughnessTexIndex) < MAX_BASE_TEX)
                 {
@@ -3348,15 +3516,24 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 {
                     ao = clamp01(sceneTextures[uint(mp.occlusionTexIndex)].sample(g_texSampler, uvOcclusion).r);
                 }
-                Ng = N;
+                Ng = NgRaw;
                 if (mp.normalTexIndex >= 0 && uint(mp.normalTexIndex) < MAX_BASE_TEX)
                 {
                     hasNormalTex = true;
-                    Ns = sampleNormalMapInstanced(mp.normalTexIndex, mp.normalUvSet, uvNormal, Ng, triangles, instances, hit.instanceIndex, hit.triIndex, sceneTextures);
+                    Ns = sampleNormalMapInstanced(mp.normalTexIndex,
+                                                  mp.normalUvSet,
+                                                  uvNormal,
+                                                  N,
+                                                  triangles,
+                                                  instances,
+                                                  hit.instanceIndex,
+                                                  hit.triIndex,
+                                                  barycentrics,
+                                                  sceneTextures);
                 }
                 else
                 {
-                    Ns = Ng;
+                    Ns = N;
                 }
 
                 if (mp.specialModel == SPECIAL_MATERIAL_UE_TRAFFIC_LIGHT)
@@ -3392,8 +3569,8 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                         emissive *= sceneTextures[uint(eTexId)].sample(g_texSampler, uvEmission).rgb;
                     }
                 }
-                Ng = N;
-                Ns = Ng;
+                Ng = NgRaw;
+                Ns = N;
             }
 
             emissivePreExposure = emissive;
@@ -3454,7 +3631,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                     case 9: result.color = float3(metallic); return result;
                     case 10: result.color = normalToRGB(Ng); return result;
                     case 11: result.color = normalToRGB(Ns); return result;
-                    case 12: { float d = clamp01(0.5f * length(Ns - Ng)); result.color = float3(d); return result; }
+                    case 12: { float d = clamp01(0.5f * length(normalize(Ns) - normalize(N))); result.color = float3(d); return result; }
                     case 13: result.color = emissivePreExposure; return result;
                     case 14: result.color = float3(ao, roughness, metallic); return result;
                     case 15: result.color = bits15; return result;
