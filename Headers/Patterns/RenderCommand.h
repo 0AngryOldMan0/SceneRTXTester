@@ -152,7 +152,7 @@ public:
 
     /**
      * @brief Export debug views during rendering
-     * Renderer-specific: currently supported by HIP backend
+     * Renderer-specific: currently supported by HIP and Metal backends
      */
     RenderCommand &setExportDebugViews(bool exportDebugViews)
     {

@@ -42,7 +42,11 @@ Examples:
 ./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -preview
 ./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -progressive 1920 1080
 ./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -preview 1920 1080 10
+./build/SceneRTXTester Scene/UE5/SubwayTunnel/scene.json -textureDebug
 ```
+
+`-textureDebug` exports additional texture-debug passes (normals, AO, roughness, metallic, emissive, etc.) alongside the beauty frame.
+Legacy `-hip-debug` is still accepted as an alias, but deprecated.
 
 ## VS Code Tasks
 

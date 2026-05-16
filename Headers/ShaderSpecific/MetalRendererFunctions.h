@@ -42,4 +42,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode> &tlasNodes,
                              const SceneMetaResources *metaRes,
                              std::vector<Vec3> &framebuffer);
 
+void SetMetalTextureDebugMode(std::uint32_t mode);
+std::uint32_t GetMetalTextureDebugMode();
+
 void ResetMetalAccumulation();

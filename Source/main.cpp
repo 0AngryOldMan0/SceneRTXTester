@@ -23,6 +23,12 @@
 #include "Renderer.h"
 #include "RendererFactory.h"
 #include "RenderCommand.h"
+#ifdef USE_HIP_RENDERER
+#include "HIPRenderer.h"
+#endif
+#ifdef USE_METAL_RENDERER
+#include "MetalRenderer.h"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -95,12 +101,65 @@ namespace
     {
         std::cerr
             << "Usage:\n"
-            << "  " << exe << " <scene_path.(obj/json)> [-preview] [-progressive] [-hip-debug] [meta.json] [width height] [spp]\n\n"
+            << "  " << exe << " <scene_path.(obj/json)> [-preview] [-progressive] [-textureDebug] [meta.json] [width height] [spp]\n\n"
             << "Examples:\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/Subway.obj Scene/UE5/SubwayTonnel/Subway_meta.json 1920 1080 10\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json 1920 1080 10\n"
             << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -preview\n"
-            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -hip-debug\n";
+            << "  " << exe << " Scene/UE5/SubwayTonnel/scene.json -textureDebug\n";
+    }
+
+    struct TextureDebugPass
+    {
+        RenderCommand::DebugView view;
+        const char *suffix;
+    };
+
+    static const std::vector<TextureDebugPass> &GetTextureDebugPasses()
+    {
+        static const std::vector<TextureDebugPass> passes = {
+            {RenderCommand::DebugView::ShadingNormals, "_DebugNs.png"},
+            {RenderCommand::DebugView::AmbientOcclusion, "_DebugAO.png"},
+            {RenderCommand::DebugView::NormalDifference, "_DebugNsMinusNg.png"},
+            {RenderCommand::DebugView::BaseColor, "_DebugBaseColor.png"},
+            {RenderCommand::DebugView::Roughness, "_DebugRoughness.png"},
+            {RenderCommand::DebugView::Metallic, "_DebugMetallic.png"},
+            {RenderCommand::DebugView::Emissive, "_DebugEmissive.png"},
+            {RenderCommand::DebugView::VertexColor, "_DebugVertexColor.png"},
+            {RenderCommand::DebugView::MaterialModel, "_DebugMaterialModel.png"}};
+        return passes;
+    }
+
+    static bool RendererSupportsTextureDebug(Renderer &renderer)
+    {
+#ifdef USE_HIP_RENDERER
+        if (dynamic_cast<HIPRenderer *>(&renderer))
+            return true;
+#endif
+#ifdef USE_METAL_RENDERER
+        if (dynamic_cast<MetalRenderer *>(&renderer))
+            return true;
+#endif
+        return false;
+    }
+
+    static bool SetRendererDebugView(Renderer &renderer, RenderCommand::DebugView view)
+    {
+#ifdef USE_HIP_RENDERER
+        if (auto *hip = dynamic_cast<HIPRenderer *>(&renderer))
+        {
+            hip->setDebugView(HIPRenderer::commandViewToHIPView(view));
+            return true;
+        }
+#endif
+#ifdef USE_METAL_RENDERER
+        if (auto *metal = dynamic_cast<MetalRenderer *>(&renderer))
+        {
+            metal->setDebugView(view);
+            return true;
+        }
+#endif
+        return view == RenderCommand::DebugView::Disabled;
     }
 
     static int PromptCameraSelection(const std::vector<SceneMetaCameraInfo> &metaCameras)
@@ -217,7 +276,8 @@ int main(int argc, char **argv)
     const fs::path scenePath = fs::path(argv[1]);
 
     TextureRenderMode renderMode = TextureRenderMode::Progressive;
-    bool exportHipDebugViews = false;
+    bool exportTextureDebugViews = false;
+    bool didWarnLegacyHipDebugFlag = false;
     std::vector<std::string> positionalArgs;
     positionalArgs.reserve((argc > 2) ? static_cast<std::size_t>(argc - 2) : 0u);
 
@@ -234,9 +294,19 @@ int main(int argc, char **argv)
             renderMode = TextureRenderMode::Progressive;
             continue;
         }
+        if (arg == "-textureDebug" || arg == "--textureDebug" || arg == "--texture-debug")
+        {
+            exportTextureDebugViews = true;
+            continue;
+        }
         if (arg == "-hip-debug" || arg == "--hip-debug" || arg == "--hip-debug-all")
         {
-            exportHipDebugViews = true;
+            exportTextureDebugViews = true;
+            if (!didWarnLegacyHipDebugFlag)
+            {
+                std::cerr << "WARNING: '-hip-debug' is deprecated, use '-textureDebug'.\n";
+                didWarnLegacyHipDebugFlag = true;
+            }
             continue;
         }
         if (!arg.empty() && arg[0] == '-')
@@ -338,10 +408,10 @@ int main(int argc, char **argv)
             .setSamplesPerPixel(samplesPerPixel)
             .setMetadata(&metaRes);
 
-        // Map old flags to new command enums
-        if (exportHipDebugViews)
+        // Debug export mode: generate additional texture debug passes.
+        if (exportTextureDebugViews)
         {
-            renderCmd.setDebugView(RenderCommand::DebugView::ShadingNormals);
+            renderCmd.setDebugView(RenderCommand::DebugView::Disabled);
             renderCmd.setExportDebugViews(true);
         }
 
@@ -440,35 +510,78 @@ int main(int argc, char **argv)
                 // Render with all available renderers
                 for (auto &renderer : renderers)
                 {
-                    std::cout << "  Rendering with " << renderer->getName() << "...\n";
+                    Renderer &rendererRef = *renderer;
+                    const std::string rendererName = rendererRef.getName();
+                    std::cout << "  Rendering with " << rendererName << "...\n";
 
                     // Update dimensions for this camera
-                    renderer->setImageSize(renderDims.width, renderDims.height);
+                    rendererRef.setImageSize(renderDims.width, renderDims.height);
 
-                    // Render the frame
-                    std::vector<Vec3> framebuffer;
-                    if (!renderer->renderTexture(scene, cam, framebuffer))
+                    const fs::path frameBasePath =
+                        outDir /
+                        (MakeSafeName(rendererName) + "_TextureFrame_Cam" + std::to_string(ci) + "_" + camName);
+
+                    auto renderAndSave = [&](const fs::path &targetPath) -> bool
                     {
-                        std::cerr << "Rendering failed for " << renderer->getName() << "\n";
+                        std::vector<Vec3> framebuffer;
+                        if (!rendererRef.renderTexture(scene, cam, framebuffer))
+                        {
+                            std::cerr << "Rendering failed for " << rendererName << "\n";
+                            hadSaveOrRenderError = true;
+                            return false;
+                        }
+
+                        try
+                        {
+                            SaveFrameBufferToPNG(framebuffer, renderDims.width, renderDims.height, targetPath.string());
+                            std::cout << "    Saved frame: " << targetPath.string() << "\n";
+                            return true;
+                        }
+                        catch (const std::exception &saveError)
+                        {
+                            hadSaveOrRenderError = true;
+                            std::cerr << "Failed to save frame for " << rendererName
+                                      << ": " << saveError.what() << "\n";
+                            return false;
+                        }
+                    };
+
+                    if (!SetRendererDebugView(rendererRef, RenderCommand::DebugView::Disabled))
+                    {
                         hadSaveOrRenderError = true;
+                        std::cerr << "Renderer does not support disabled debug view: " << rendererName << "\n";
                         continue;
                     }
 
-                    const fs::path framePath =
-                        outDir /
-                        (MakeSafeName(renderer->getName()) + "_TextureFrame_Cam" + std::to_string(ci) + "_" + camName + "_0.png");
+                    const fs::path beautyPath = fs::path(frameBasePath.string() + "_0.png");
+                    savedAnyFrame = renderAndSave(beautyPath) || savedAnyFrame;
 
-                    try
+                    if (exportTextureDebugViews)
                     {
-                        SaveFrameBufferToPNG(framebuffer, renderDims.width, renderDims.height, framePath.string());
-                        savedAnyFrame = true;
-                        std::cout << "    Saved frame: " << framePath.string() << "\n";
-                    }
-                    catch (const std::exception &saveError)
-                    {
-                        hadSaveOrRenderError = true;
-                        std::cerr << "Failed to save frame for " << renderer->getName()
-                                  << ": " << saveError.what() << "\n";
+                        if (!RendererSupportsTextureDebug(rendererRef))
+                        {
+                            hadSaveOrRenderError = true;
+                            std::cerr << "Renderer " << rendererName
+                                      << " does not support -textureDebug passes\n";
+                        }
+                        else
+                        {
+                            for (const TextureDebugPass &pass : GetTextureDebugPasses())
+                            {
+                                if (!SetRendererDebugView(rendererRef, pass.view))
+                                {
+                                    hadSaveOrRenderError = true;
+                                    std::cerr << "Renderer " << rendererName
+                                              << " does not support debug pass " << pass.suffix << "\n";
+                                    continue;
+                                }
+
+                                const fs::path debugPath = fs::path(frameBasePath.string() + pass.suffix);
+                                savedAnyFrame = renderAndSave(debugPath) || savedAnyFrame;
+                            }
+                        }
+
+                        (void)SetRendererDebugView(rendererRef, RenderCommand::DebugView::Disabled);
                     }
                 }
 
@@ -494,32 +607,75 @@ int main(int argc, char **argv)
             // Render with all available renderers
             for (auto &renderer : renderers)
             {
-                std::cout << "Rendering with " << renderer->getName() << "...\n";
+                Renderer &rendererRef = *renderer;
+                const std::string rendererName = rendererRef.getName();
+                std::cout << "Rendering with " << rendererName << "...\n";
 
-                // Render the frame
-                std::vector<Vec3> framebuffer;
-                if (!renderer->renderTexture(scene, cam, framebuffer))
+                const fs::path frameBasePath =
+                    outDir /
+                    (MakeSafeName(rendererName) + "_TextureFrame_DefaultCamera");
+
+                auto renderAndSave = [&](const fs::path &targetPath) -> bool
                 {
-                    std::cerr << "Rendering failed for " << renderer->getName() << "\n";
+                    std::vector<Vec3> framebuffer;
+                    if (!rendererRef.renderTexture(scene, cam, framebuffer))
+                    {
+                        std::cerr << "Rendering failed for " << rendererName << "\n";
+                        hadSaveOrRenderError = true;
+                        return false;
+                    }
+
+                    try
+                    {
+                        SaveFrameBufferToPNG(framebuffer, imageWidth, imageHeight, targetPath.string());
+                        std::cout << "  Saved frame: " << targetPath.string() << "\n";
+                        return true;
+                    }
+                    catch (const std::exception &saveError)
+                    {
+                        hadSaveOrRenderError = true;
+                        std::cerr << "Failed to save frame for " << rendererName
+                                  << ": " << saveError.what() << "\n";
+                        return false;
+                    }
+                };
+
+                if (!SetRendererDebugView(rendererRef, RenderCommand::DebugView::Disabled))
+                {
                     hadSaveOrRenderError = true;
+                    std::cerr << "Renderer does not support disabled debug view: " << rendererName << "\n";
                     continue;
                 }
 
-                const fs::path framePath =
-                    outDir /
-                    (MakeSafeName(renderer->getName()) + "_TextureFrame_DefaultCamera_0.png");
+                const fs::path beautyPath = fs::path(frameBasePath.string() + "_0.png");
+                savedAnyFrame = renderAndSave(beautyPath) || savedAnyFrame;
 
-                try
+                if (exportTextureDebugViews)
                 {
-                    SaveFrameBufferToPNG(framebuffer, imageWidth, imageHeight, framePath.string());
-                    savedAnyFrame = true;
-                    std::cout << "  Saved frame: " << framePath.string() << "\n";
-                }
-                catch (const std::exception &saveError)
-                {
-                    hadSaveOrRenderError = true;
-                    std::cerr << "Failed to save frame for " << renderer->getName()
-                              << ": " << saveError.what() << "\n";
+                    if (!RendererSupportsTextureDebug(rendererRef))
+                    {
+                        hadSaveOrRenderError = true;
+                        std::cerr << "Renderer " << rendererName
+                                  << " does not support -textureDebug passes\n";
+                    }
+                    else
+                    {
+                        for (const TextureDebugPass &pass : GetTextureDebugPasses())
+                        {
+                            if (!SetRendererDebugView(rendererRef, pass.view))
+                            {
+                                hadSaveOrRenderError = true;
+                                std::cerr << "Renderer " << rendererName
+                                          << " does not support debug pass " << pass.suffix << "\n";
+                                continue;
+                            }
+
+                            const fs::path debugPath = fs::path(frameBasePath.string() + pass.suffix);
+                            savedAnyFrame = renderAndSave(debugPath) || savedAnyFrame;
+                        }
+                    }
+
+                    (void)SetRendererDebugView(rendererRef, RenderCommand::DebugView::Disabled);
                 }
             }
 

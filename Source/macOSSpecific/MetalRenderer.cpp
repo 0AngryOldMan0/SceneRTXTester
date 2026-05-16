@@ -118,6 +118,17 @@ void MetalRenderer::setAccumulationMode(MetalAccumulationMode mode)
     resetAccumulation();
 }
 
+void MetalRenderer::setDebugView(RenderCommand::DebugView view)
+{
+    const std::uint32_t targetMode = commandViewToMetalDebugMode(view);
+    if (debugView_ == view && GetMetalTextureDebugMode() == targetMode)
+        return;
+
+    debugView_ = view;
+    SetMetalTextureDebugMode(targetMode);
+    resetAccumulation();
+}
+
 bool MetalRenderer::initialize()
 {
     return InitMetalRenderer();
@@ -136,6 +147,7 @@ bool MetalRenderer::initializeWithCommand(const RenderCommand &command)
     }
 
     setAccumulationMode(commandModeToMetalMode(command.getAccumulationMode()));
+    setDebugView(command.getDebugView());
 
     return true;
 }

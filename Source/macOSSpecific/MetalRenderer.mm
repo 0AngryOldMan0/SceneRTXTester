@@ -71,7 +71,7 @@ namespace
 
     constexpr uint32_t          kMaxAllTextures = 124;
     constexpr uint32_t          kAccumulatedSampleCountMax = 0x00FFFFFFu;
-    constexpr uint32_t          kMetalShaderUvDebugMode = 0u; // keep in sync with UV_DEBUG_MODE in RayTrace.metal
+    uint32_t                    g_metalShaderUvDebugMode = 0u;
     constexpr std::uint64_t     kInvalidAccumulationHash = std::numeric_limits<std::uint64_t>::max();
 
     // Накопительная текстура + sample-based state для прогрессивного рендера
@@ -130,6 +130,7 @@ namespace
     id<MTLBuffer>               g_camBuffer                   = nil;
     id<MTLBuffer>               g_imgSizeBuffer               = nil;
     id<MTLBuffer>               g_sampleCountBuffer           = nil;
+    id<MTLBuffer>               g_uvDebugModeBuffer           = nil;
     id<MTLBuffer>               g_postProcessBuffer           = nil;
 
     std::uint64_t               g_cachedSceneRevision         = 0;
@@ -508,7 +509,7 @@ namespace
         hash.addU64(sceneRevision);
         hash.addI32(width);
         hash.addI32(height);
-        hash.addU32(kMetalShaderUvDebugMode);
+        hash.addU32(g_metalShaderUvDebugMode);
         hash.addU32(static_cast<std::uint32_t>(accumulationMode));
 
         hash.addU64(static_cast<std::uint64_t>(lights.size()));
@@ -545,7 +546,7 @@ namespace
 
     static uint32_t EffectiveSamplesPerDispatch(const CameraDataCPU &cameraCPU)
     {
-        if (kMetalShaderUvDebugMode != 0u)
+        if (g_metalShaderUvDebugMode != 0u)
             return 0u;
 
         return static_cast<uint32_t>(std::max(cameraCPU.samplesPerPixel, 1));
@@ -2145,6 +2146,21 @@ void ResetMetalAccumulation()
     g_textureProfileCallIndex = 0;
 }
 
+void SetMetalTextureDebugMode(std::uint32_t mode)
+{
+    mode &= 0xFFu;
+    if (g_metalShaderUvDebugMode == mode)
+        return;
+
+    g_metalShaderUvDebugMode = mode;
+    ResetMetalAccumulationState();
+}
+
+std::uint32_t GetMetalTextureDebugMode()
+{
+    return g_metalShaderUvDebugMode;
+}
+
 // Инициализация Metal: устройство, очередь, пайплайны
 bool InitMetalRenderer()
 {
@@ -2379,9 +2395,11 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             static_cast<uint32_t>(height)
         };
         const auto smallStart = ProfileClock::now();
+        const uint32_t uvDebugMode = g_metalShaderUvDebugMode;
         if (!UploadSharedValue(g_device, g_camBuffer, cameraCPU) ||
             !UploadSharedValue(g_device, g_imgSizeBuffer, imageSize) ||
             !UploadSharedValue(g_device, g_sampleCountBuffer, sampleBaseIndex) ||
+            !UploadSharedValue(g_device, g_uvDebugModeBuffer, uvDebugMode) ||
             !UploadSharedValue(g_device, g_postProcessBuffer, pp))
         {
             std::cerr << "Metal: failed to update persistent small/frame buffers\n";
@@ -2442,6 +2460,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             [enc setBuffer:g_postProcessBuffer           offset:0 atIndex:22];
             [enc setBuffer:g_airDustVolumeBuffer         offset:0 atIndex:23];
             [enc setBuffer:g_airDustVolumeCountBuffer    offset:0 atIndex:24];
+            [enc setBuffer:g_uvDebugModeBuffer           offset:0 atIndex:25];
 
             [enc setTexture:g_accumTexture atIndex:0];
             [enc setTexture:g_hdrTexture   atIndex:1];
@@ -2497,6 +2516,7 @@ bool RenderFrameMetalTexture(const std::vector<BVHNode>   &tlasNodes,
             [enc setBuffer:g_airDustVolumeBuffer offset:0 atIndex:1];
             [enc setBuffer:g_airDustVolumeCountBuffer offset:0 atIndex:2];
             [enc setBuffer:g_camBuffer offset:0 atIndex:3];
+            [enc setBuffer:g_uvDebugModeBuffer offset:0 atIndex:4];
             [enc setTexture:g_hdrTexture    atIndex:0];
             [enc setTexture:g_bloomTextureA atIndex:1];
             [enc setTexture:g_outTexture    atIndex:2];

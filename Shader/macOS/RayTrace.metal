@@ -23,7 +23,6 @@ constant float DENOISE_SIGMA_SPACE   = 1.0f;   // радиус влияния п
 constant float DENOISE_SIGMA_COLOR   = 0.20f;  // чувствительность к разнице цветов
 constant float DENOISE_BLEND_FACTOR  = 0.40f;  // 0 = полностью размыть, 1 = без фильтра
 
-constant int UV_DEBUG_MODE = 0;
 constant int LIGHTING_CALIBRATION_MODE = 0;
 
 /*
@@ -44,6 +43,7 @@ constant int LIGHTING_CALIBRATION_MODE = 0;
 14 — ORM decoded как RGB = (AO, Rough, Metal)
 15 — presence bits RGB = (hasPBR, hasBaseColorTex, hasNormalTex)
 16 — presence bits RGB = (hasORMTex, hasRoughnessTex, hasMetallicTex)
+17 — baseColor factor (useful as vertex/base color debug proxy)
 */
 
 /*
@@ -3159,6 +3159,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                                                      const device LightGPU *lights,
                                                      uint                   lightCount,
                                                      uint                   sampleBaseIndex,
+                                                     uint                   uvDebugMode,
                                                      const device MaterialGPU *materials,
                                                      uint                    materialCount,
                                                      const device MaterialGPU_PBR *materialsPBR,
@@ -3190,7 +3191,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
 
     int spp = samplesPerPixel;
     if (spp <= 0) spp = 1;
-    if (UV_DEBUG_MODE != 0) spp = 1;
+    if (uvDebugMode != 0u) spp = 1;
 
     PrimaryVolumeParams volumeParams{};
     if (volumeParamsPtr != nullptr)
@@ -3227,7 +3228,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             jy = rand01(seedBase ^ 0x13579Bu) - 0.5f;
         }
 
-        float2 jitter = (UV_DEBUG_MODE != 0 || s == 0) ? float2(0.0f) : float2(jx, jy);
+        float2 jitter = (uvDebugMode != 0u || s == 0) ? float2(0.0f) : float2(jx, jy);
         Ray ray = makePrimaryRayJittered(int(gid.x), int(gid.y), int(w), int(h), jitter,
                                          camPos, camForward, camUp, camRight, fovY, aspectRatio);
 
@@ -3434,13 +3435,13 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 }
             }
 
-            if (UV_DEBUG_MODE != 0 && bounce == 0)
+            if (uvDebugMode != 0u && bounce == 0)
             {
                 float2 uvW = uv;
                 float3 checker = uvChecker(uvW, 12.0f);
                 float3 bits15 = float3(hasMatPBR ? 1.0f : 0.0f, hasBaseColorTex ? 1.0f : 0.0f, hasNormalTex ? 1.0f : 0.0f);
                 float3 bits16 = float3(hasORMTex ? 1.0f : 0.0f, hasRoughnessTex ? 1.0f : 0.0f, hasMetallicTex ? 1.0f : 0.0f);
-                switch (UV_DEBUG_MODE)
+                switch (int(uvDebugMode))
                 {
                     case 1: result.color = checker; return result;
                     case 2: baseColor = checker; emissive = float3(0.0f); emissivePreExposure = float3(0.0f); metallic = 0.0f; roughness = 0.5f; ao = 1.0f; break;
@@ -3458,6 +3459,7 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                     case 14: result.color = float3(ao, roughness, metallic); return result;
                     case 15: result.color = bits15; return result;
                     case 16: result.color = bits16; return result;
+                    case 17: result.color = baseColorFactor; return result;
                     default: break;
                 }
             }
@@ -3780,6 +3782,7 @@ kernel void RayTraceTextureKernel(
     constant PrimaryVolumeParams     *volumeParamsPtr            [[buffer(22)]],
     const device AirDustVolumeGPU    *airDustVolumes             [[buffer(23)]],
     constant uint                    *airDustVolumeCountPtr      [[buffer(24)]],
+    constant uint                    *uvDebugModePtr             [[buffer(25)]],
     array<texture2d<float, access::sample>, MAX_BASE_TEX> sceneTextures [[texture(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
@@ -3812,6 +3815,7 @@ kernel void RayTraceTextureKernel(
 
     uint lightCount = (lightCountPtr != nullptr) ? *lightCountPtr : 0u;
     uint sampleBaseIndex = (sampleCountPtr != nullptr) ? *sampleCountPtr : 0u;
+    const uint uvDebugMode = (uvDebugModePtr != nullptr) ? *uvDebugModePtr : 0u;
     uint materialCount = (materialCountPtr != nullptr) ? *materialCountPtr : 0u;
     uint materialPBRCount = (materialPBRCountPtr != nullptr) ? *materialPBRCountPtr : 0u;
     uint emissiveTriangleCount = (emissiveTriangleCountPtr != nullptr) ? *emissiveTriangleCountPtr : 0u;
@@ -3828,6 +3832,7 @@ kernel void RayTraceTextureKernel(
         spp,
         lights, lightCount,
         sampleBaseIndex,
+        uvDebugMode,
         materials,
         materialCount,
         materialsPBR,
@@ -3842,14 +3847,14 @@ kernel void RayTraceTextureKernel(
         sceneTextures);
     float3 frameColor = pathResult.color;
     float depthValue = pathResult.depth;
-    uint samplesThisDispatch = (UV_DEBUG_MODE != 0) ? 0u : uint(max(spp, 1));
+    uint samplesThisDispatch = (uvDebugMode != 0u) ? 0u : uint(max(spp, 1));
 
     frameColor = min(frameColor, float3(32.0f));
     albedoTex.write(float4(pathResult.albedo, pathResult.hitMask), gid);
     normalTex.write(float4(pathResult.normal, pathResult.hitMask), gid);
 
-    const uint stampNow = uint(UV_DEBUG_MODE) & 0xFFu;
-    if (UV_DEBUG_MODE != 0)
+    const uint stampNow = uvDebugMode & 0xFFu;
+    if (uvDebugMode != 0u)
     {
         accumTex.write(float4(0.0f, 0.0f, 0.0f, as_type<float>(packStampCount(stampNow, 0u))), gid);
         hdrTex.write(float4(debugGamma(frameColor), depthValue), gid);
@@ -4041,6 +4046,7 @@ kernel void PostProcessKernel(
     const device AirDustVolumeGPU    *airDustVolumes     [[buffer(1)]],
     const device uint                *airDustVolumeCount [[buffer(2)]],
     constant CameraData              *camPtr             [[buffer(3)]],
+    constant uint                    *uvDebugModePtr     [[buffer(4)]],
     texture2d<float, access::sample>  hdrTex             [[texture(0)]],
     texture2d<float, access::sample>  bloomTex           [[texture(1)]],
     texture2d<float, access::write>   outTex             [[texture(2)]],
@@ -4048,12 +4054,13 @@ kernel void PostProcessKernel(
 {
     const PostProcessParams pp = *ppPtr;
     const CameraData cam = *camPtr;
+    const uint uvDebugMode = (uvDebugModePtr != nullptr) ? *uvDebugModePtr : 0u;
     if (gid.x >= uint(pp.width) || gid.y >= uint(pp.height))
         return;
 
     float2 uv = (float2(gid) + 0.5f) / float2(pp.width, pp.height);
 
-    if (UV_DEBUG_MODE != 0)
+    if (uvDebugMode != 0u)
     {
         outTex.write(float4(hdrTex.sample(g_postSampler, uv).rgb, 1.0f), gid);
         return;
