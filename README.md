@@ -121,3 +121,12 @@ cmake --build build --target SceneRTXBenchmarks
 ```bash
 ./build/SceneRTXBenchmarks --iterations 12 --warmup 3 --bvh-triangles 5000
 ```
+
+Экспорт результатов в JSON:
+
+```bash
+./build/SceneRTXBenchmarks \
+  --iterations 12 \
+  --warmup 3 \
+  --json-out Results/benchmarks/bench_$(date +%Y%m%d_%H%M%S).json
+```

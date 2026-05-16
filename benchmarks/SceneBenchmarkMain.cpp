@@ -3,9 +3,12 @@
 #include "SceneJSONLoader.h"
 #include "SceneObject.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +24,7 @@
 namespace
 {
     using Clock = std::chrono::steady_clock;
+    using json = nlohmann::json;
 
     struct Options
     {
@@ -32,6 +36,7 @@ namespace
         std::string filter;
         std::string objPath;
         std::string jsonPath;
+        std::string jsonOutPath;
         bool helpRequested = false;
     };
 
@@ -85,6 +90,7 @@ namespace
             << "  --json-triangles N    Triangle count for generated SceneJSON bench (default: 40000)\n"
             << "  --obj-path PATH       Use existing OBJ file instead of generated one\n"
             << "  --json-path PATH      Use existing Scene JSON file instead of generated one\n"
+            << "  --json-out PATH       Write benchmark report to JSON file\n"
             << "  --filter TEXT         Run only benchmarks that contain TEXT in name\n"
             << "  --help                Show this help\n";
     }
@@ -177,6 +183,13 @@ namespace
                     return false;
                 opts.filter = value;
             }
+            else if (key == "--json-out")
+            {
+                const char *value = requireValue("--json-out");
+                if (value == nullptr)
+                    return false;
+                opts.jsonOutPath = value;
+            }
             else
             {
                 std::cerr << "Unknown argument: " << key << "\n";
@@ -247,6 +260,121 @@ namespace
     bool matchesFilter(const std::string &name, const std::string &filter)
     {
         return filter.empty() || name.find(filter) != std::string::npos;
+    }
+
+    std::string nowUtcIso8601()
+    {
+        const std::time_t t = std::time(nullptr);
+        std::tm utc{};
+#if defined(_WIN32)
+        gmtime_s(&utc, &t);
+#else
+        gmtime_r(&t, &utc);
+#endif
+        std::ostringstream oss;
+        oss << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+        return oss.str();
+    }
+
+    std::string readEnvVar(const char *name)
+    {
+        const char *value = std::getenv(name);
+        return (value == nullptr) ? std::string{} : std::string(value);
+    }
+
+    std::string detectCommitHintFromEnv()
+    {
+        const std::string candidates[] = {
+            "GIT_COMMIT",
+            "CI_COMMIT_SHA",
+            "GITHUB_SHA"};
+
+        for (const std::string &key : candidates)
+        {
+            const std::string value = readEnvVar(key.c_str());
+            if (!value.empty())
+                return value;
+        }
+        return {};
+    }
+
+    bool writeJsonReport(const std::filesystem::path &jsonPath,
+                         const Options &opts,
+                         const std::vector<std::string> &argvList,
+                         const std::filesystem::path &objPath,
+                         bool objGenerated,
+                         const std::filesystem::path &sceneJsonPath,
+                         bool sceneGenerated,
+                         const std::vector<BenchmarkResult> &results,
+                         std::string &errorOut)
+    {
+        json report;
+        report["schema_version"] = 1;
+        report["tool"] = "SceneRTXBenchmarks";
+        report["generated_at_utc"] = nowUtcIso8601();
+        report["command_line"] = argvList;
+
+        std::error_code ec;
+        const std::filesystem::path cwd = std::filesystem::current_path(ec);
+        report["environment"] = {
+            {"cwd", ec ? std::string{} : cwd.string()},
+            {"commit_hint", detectCommitHintFromEnv()}};
+
+        report["run"] = {
+            {"iterations", opts.iterations},
+            {"warmup", opts.warmup},
+            {"filter", opts.filter},
+            {"bvh_triangles", opts.bvhTriangles},
+            {"obj_triangles", opts.objTriangles},
+            {"json_triangles", opts.jsonTriangles}};
+
+        report["sources"] = {
+            {"obj_path", objPath.string()},
+            {"obj_generated", objGenerated},
+            {"scene_json_path", sceneJsonPath.string()},
+            {"scene_json_generated", sceneGenerated}};
+
+        report["results"] = json::array();
+        for (const BenchmarkResult &r : results)
+        {
+            report["results"].push_back({
+                {"name", r.name},
+                {"payload", r.payload},
+                {"iterations", r.iterations},
+                {"mean_ms", r.meanMs},
+                {"median_ms", r.medianMs},
+                {"min_ms", r.minMs},
+                {"max_ms", r.maxMs}});
+        }
+
+        report["summary"] = {
+            {"benchmark_count", results.size()}};
+
+        ec.clear();
+        const std::filesystem::path parent = jsonPath.parent_path();
+        if (!parent.empty())
+            std::filesystem::create_directories(parent, ec);
+        if (ec)
+        {
+            errorOut = "Failed to create directory for JSON report: " + parent.string();
+            return false;
+        }
+
+        std::ofstream out(jsonPath);
+        if (!out)
+        {
+            errorOut = "Failed to open JSON report file for writing: " + jsonPath.string();
+            return false;
+        }
+
+        out << std::setw(2) << report << '\n';
+        if (!out.good())
+        {
+            errorOut = "Failed to write JSON report: " + jsonPath.string();
+            return false;
+        }
+
+        return true;
     }
 
     Triangle makeTriangle(float x, float y, float z)
@@ -453,13 +581,20 @@ int main(int argc, char **argv)
         std::cout << "WARNING: BottomUp BVH is O(n^2); large --bvh-triangles may run for a long time.\n";
     }
 
-    TempDir temp;
+    std::vector<std::string> argvList;
+    argvList.reserve(static_cast<std::size_t>(argc));
+    for (int i = 0; i < argc; ++i)
+        argvList.emplace_back(argv[i] == nullptr ? "" : argv[i]);
 
-    const std::filesystem::path objPath = opts.objPath.empty()
+    TempDir temp;
+    const bool generatedObj = opts.objPath.empty();
+    const bool generatedSceneJson = opts.jsonPath.empty();
+
+    const std::filesystem::path objPath = generatedObj
                                               ? generateLargeObj(temp.path(), opts.objTriangles)
                                               : std::filesystem::path(opts.objPath);
 
-    const std::filesystem::path sceneJsonPath = opts.jsonPath.empty()
+    const std::filesystem::path sceneJsonPath = generatedSceneJson
                                                     ? generateLargeSceneJson(temp.path(), opts.jsonTriangles)
                                                     : std::filesystem::path(opts.jsonPath);
 
@@ -536,6 +671,27 @@ int main(int argc, char **argv)
 
     std::cout << "\nOBJ source: " << objPath.string() << '\n';
     std::cout << "Scene JSON source: " << sceneJsonPath.string() << '\n';
+
+    if (!opts.jsonOutPath.empty())
+    {
+        std::string jsonError;
+        const std::filesystem::path outPath = std::filesystem::path(opts.jsonOutPath);
+        if (!writeJsonReport(outPath,
+                             opts,
+                             argvList,
+                             objPath,
+                             generatedObj,
+                             sceneJsonPath,
+                             generatedSceneJson,
+                             results,
+                             jsonError))
+        {
+            std::cerr << "ERROR: " << jsonError << '\n';
+            return 1;
+        }
+        std::cout << "JSON report: " << outPath.string() << '\n';
+    }
+
     std::cout << "Done.\n";
 
     return 0;
