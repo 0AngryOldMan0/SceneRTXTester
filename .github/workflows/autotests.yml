@@ -1,0 +1,55 @@
+name: Autotests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ctest-and-benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: Configure (CPU-only)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSCENERTX_ENABLE_TESTING=ON \
+            -DSCENERTX_ENABLE_BENCHMARKS=ON \
+            -DUSE_METAL_RENDERER=OFF \
+            -DUSE_HIP_RENDERER=OFF \
+            -DUSE_CUDA_RENDERER=OFF
+
+      - name: Build test and benchmark targets
+        run: |
+          cmake --build build --target SceneRTXTesterTests SceneRTXBenchmarks
+
+      - name: Run autotests (CTest)
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Run benchmark and export JSON
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+        run: |
+          mkdir -p Results/benchmarks
+          ./build/SceneRTXBenchmarks \
+            --iterations 3 \
+            --warmup 1 \
+            --filter BVHBuilder.TopDown \
+            --json-out Results/benchmarks/ci_benchmark.json
+
+      - name: Upload benchmark JSON artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-benchmark-json-${{ github.sha }}
+          path: Results/benchmarks/ci_benchmark.json
+          if-no-files-found: error

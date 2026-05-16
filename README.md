@@ -90,6 +90,7 @@ Recommended flow:
 ## Тесты
 
 В проект добавлена базовая инфраструктура `ctest` и набор стартовых unit/integration/system smoke тестов.
+Для автозапуска в репозитории добавлен CI workflow: `.github/workflows/autotests.yml` (запуск на `push`/`pull_request`).
 
 Быстрый запуск:
 
