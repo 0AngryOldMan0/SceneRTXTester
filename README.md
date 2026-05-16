@@ -86,3 +86,17 @@ Recommended flow:
 - The executable is copied to a stable path:
   - macOS: `./build/SceneRTXTester`
   - Windows: `.\build\SceneRTXTester.exe`
+
+## Тесты
+
+В проект добавлена базовая инфраструктура `ctest` и набор стартовых unit/integration/system smoke тестов.
+
+Быстрый запуск:
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Подробная стратегия и карта текущего покрытия: [TESTING.md](TESTING.md).

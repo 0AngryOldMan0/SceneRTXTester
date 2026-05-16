@@ -4,6 +4,7 @@ project(SceneRTXTester LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(SCENERTX_ENABLE_TESTING "Build tests and register them in CTest" ON)
 set(SCENERTX_COMPAT_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build")
 file(REAL_PATH "${CMAKE_CURRENT_BINARY_DIR}" SCENERTX_REAL_BINARY_DIR)
 file(REAL_PATH "${SCENERTX_COMPAT_BUILD_DIR}" SCENERTX_REAL_COMPAT_BUILD_DIR)
@@ -312,4 +313,69 @@ endif()
 # -----------------------
 if(WIN32 AND USE_CUDA_RENDERER)
     target_compile_definitions(SceneRTXTester PRIVATE USE_CUDA_RENDERER=1)
+endif()
+
+# -----------------------
+# Tests (CPU-only)
+# -----------------------
+if(SCENERTX_ENABLE_TESTING)
+    include(CTest)
+
+    if(BUILD_TESTING)
+        set(SCENERTX_TEST_SOURCES
+            tests/TestMain.cpp
+            tests/unit/MathUtilsTests.cpp
+            tests/unit/CameraTests.cpp
+            tests/unit/SceneObjectTests.cpp
+            tests/unit/RenderCommandTests.cpp
+            tests/unit/SceneLoaderFactoryTests.cpp
+            tests/unit/RendererRegistryTests.cpp
+            tests/integration/OBJLoaderIntegrationTests.cpp
+            tests/integration/SceneJSONLoaderIntegrationTests.cpp
+            tests/system/ScenePipelineSmokeTests.cpp
+        )
+
+        set(SCENERTX_TEST_RUNTIME_SOURCES
+            Source/Common/SceneLoader.cpp
+            Source/Common/OBJLoader.cpp
+            Source/Common/SceneJSONLoader.cpp
+            Source/Common/SceneObject.cpp
+            Source/Common/BVHBuilder.cpp
+            Source/Common/Camera.cpp
+            Source/Common/Scene.cpp
+            Source/Common/Renderer.cpp
+            Source/Common/RendererRegistry.cpp
+            Source/Common/RendererFactory.cpp
+            Source/Common/SceneLoaderFactory.cpp
+        )
+
+        add_executable(SceneRTXTesterTests
+            ${SCENERTX_TEST_SOURCES}
+            ${SCENERTX_TEST_RUNTIME_SOURCES}
+        )
+
+        target_include_directories(SceneRTXTesterTests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/Headers
+            ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Classes
+            ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Structures
+            ${CMAKE_CURRENT_SOURCE_DIR}/Headers/ShaderSpecific
+            ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Patterns
+            ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs
+            ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs/json-develop/single_include
+            ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs/stb-master
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration
+        )
+
+        if(MSVC)
+            target_compile_options(SceneRTXTesterTests PRIVATE /W4 /permissive-)
+        else()
+            target_compile_options(SceneRTXTesterTests PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+
+        add_test(NAME SceneRTXTester.All COMMAND SceneRTXTesterTests)
+        add_test(NAME SceneRTXTester.UnitOnly COMMAND SceneRTXTesterTests Unit)
+        add_test(NAME SceneRTXTester.IntegrationOnly COMMAND SceneRTXTesterTests Integration)
+        add_test(NAME SceneRTXTester.SystemSmoke COMMAND SceneRTXTesterTests SystemSmoke)
+    endif()
 endif()
