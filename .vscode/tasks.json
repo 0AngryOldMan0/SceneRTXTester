@@ -2,16 +2,69 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build (HIP, Debug)",
+      "label": "Configure (Debug, platform backend)",
       "type": "shell",
-      "command": "powershell",
+      "command": "cmake",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\build.ps1 hip Debug"
+        "-S",
+        ".",
+        "-B",
+        "build",
+        "-DCMAKE_BUILD_TYPE=Debug",
+        "-DUSE_METAL_RENDERER=ON",
+        "-DUSE_HIP_RENDERER=OFF",
+        "-DUSE_CUDA_RENDERER=OFF"
       ],
+      "windows": {
+        "command": "cmake",
+        "args": [
+          "-S",
+          ".",
+          "-B",
+          "build",
+          "-DCMAKE_BUILD_TYPE=Debug",
+          "-DUSE_HIP_RENDERER=ON",
+          "-DUSE_CUDA_RENDERER=OFF",
+          "-DUSE_METAL_RENDERER=OFF",
+          "-DCMAKE_PREFIX_PATH=${env:HIP_PATH}",
+          "-DCMAKE_HIP_ARCHITECTURES=gfx1030"
+        ]
+      },
+      "osx": {
+        "command": "cmake",
+        "args": [
+          "-S",
+          ".",
+          "-B",
+          "build",
+          "-DCMAKE_BUILD_TYPE=Debug",
+          "-DUSE_METAL_RENDERER=ON",
+          "-DUSE_HIP_RENDERER=OFF",
+          "-DUSE_CUDA_RENDERER=OFF"
+        ]
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build (cmake --build build)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build"
+      ],
+      "dependsOn": [
+        "Configure (Debug, platform backend)"
+      ],
+      "dependsOrder": "sequence",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -26,16 +79,29 @@
       "problemMatcher": []
     },
     {
-      "label": "Build (MSVC, Debug)",
+      "label": "Clean + Build",
       "type": "shell",
-      "command": "powershell",
+      "command": "cmake",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\build.ps1 msvc Debug"
+        "-E",
+        "rm",
+        "-rf",
+        "build"
       ],
+      "windows": {
+        "command": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "if (Test-Path build) { Remove-Item -Recurse -Force build }"
+        ]
+      },
+      "dependsOn": [
+        "Build (cmake --build build)"
+      ],
+      "dependsOrder": "sequence",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -43,158 +109,109 @@
       "presentation": {
         "reveal": "always",
         "panel": "shared"
-      }
-    },
-    {
-      "label": "Build (CUDA, Debug)",
-      "type": "shell",
-      "command": "powershell",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\build.ps1 cuda Debug"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}"
       },
-      "group": "build",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      }
+      "problemMatcher": []
     },
     {
-      "label": "Build (HIP, Release)",
+      "label": "Run SceneRTXTester (integrated terminal)",
       "type": "shell",
-      "command": "powershell",
+      "command": "/bin/zsh",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\build.ps1 hip Release"
+        "-lc",
+        "\"${workspaceFolder}/build/SceneRTXTester\" \"${input:scenePath}\" ${input:renderType} ${input:resolutionArgs}"
       ],
-      "options": {
-        "cwd": "${workspaceFolder}"
+      "windows": {
+        "command": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "& \"${workspaceFolder}\\build\\SceneRTXTester.exe\" \"${input:scenePath}\" ${input:renderType} ${input:resolutionArgs}"
+        ]
       },
-      "group": "build",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      }
-    },
-    {
-      "label": "Build (MSVC, Release)",
-      "type": "shell",
-      "command": "powershell",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\build.ps1 msvc Release"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "build",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      }
-    },
-    {
-      "label": "Clean Build",
-      "type": "shell",
-      "command": "powershell",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\build.ps1 hip Debug -Clean"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "build",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared"
-      }
-    },
-    {
-      "label": "Run SceneRTXTester",
-      "type": "shell",
-      "command": "powershell",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\run.ps1 '${input:scenePath}'"
-      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "dependsOn": [
-        "Build (HIP, Debug)"
+        "Build (cmake --build build)"
       ],
+      "dependsOrder": "sequence",
       "group": {
         "kind": "test",
         "isDefault": true
       },
       "presentation": {
         "reveal": "always",
-        "panel": "new"
+        "panel": "dedicated",
+        "focus": true,
+        "clear": false
       }
     },
     {
-      "label": "Run with Custom Args",
+      "label": "Run SceneRTXTester (preview)",
       "type": "shell",
-      "command": "powershell",
+      "command": "/bin/zsh",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\run.ps1 '${input:scenePath}' ${input:runArgs}"
+        "-lc",
+        "\"${workspaceFolder}/build/SceneRTXTester\" \"${input:scenePath}\" -preview ${input:resolutionArgs}"
       ],
+      "windows": {
+        "command": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "& \"${workspaceFolder}\\build\\SceneRTXTester.exe\" \"${input:scenePath}\" -preview ${input:resolutionArgs}"
+        ]
+      },
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "dependsOn": [
-        "Build (HIP, Debug)"
+        "Build (cmake --build build)"
       ],
+      "dependsOrder": "sequence",
       "group": "test",
       "presentation": {
         "reveal": "always",
-        "panel": "new"
+        "panel": "dedicated",
+        "focus": true,
+        "clear": false
       }
     },
     {
-      "label": "Run HIP Debug",
+      "label": "Run SceneRTXTester (progressive)",
       "type": "shell",
-      "command": "powershell",
+      "command": "/bin/zsh",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        ".\\run.ps1 '${input:scenePath}' -preview -hip-debug"
+        "-lc",
+        "\"${workspaceFolder}/build/SceneRTXTester\" \"${input:scenePath}\" -progressive ${input:resolutionArgs}"
       ],
+      "windows": {
+        "command": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "& \"${workspaceFolder}\\build\\SceneRTXTester.exe\" \"${input:scenePath}\" -progressive ${input:resolutionArgs}"
+        ]
+      },
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "dependsOn": [
-        "Build (HIP, Debug)"
+        "Build (cmake --build build)"
       ],
+      "dependsOrder": "sequence",
       "group": "test",
       "presentation": {
         "reveal": "always",
-        "panel": "new"
+        "panel": "dedicated",
+        "focus": true,
+        "clear": false
       }
     }
   ],
@@ -206,10 +223,20 @@
       "default": "Scene/UE5/SubwayTunnel/scene.json"
     },
     {
-      "id": "runArgs",
-      "type": "promptString",
-      "description": "Additional arguments for the renderer (e.g., '-preview' or '1920 1080 10')",
+      "id": "renderType",
+      "type": "pickString",
+      "description": "Render type",
+      "options": [
+        "-preview",
+        "-progressive"
+      ],
       "default": "-preview"
+    },
+    {
+      "id": "resolutionArgs",
+      "type": "promptString",
+      "description": "Resolution/spp (optional): '1920 1080' or '1920 1080 10'",
+      "default": ""
     }
   ]
 }

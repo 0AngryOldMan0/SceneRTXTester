@@ -5,6 +5,12 @@ project(SceneRTXTester LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(SCENERTX_COMPAT_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build")
+file(REAL_PATH "${CMAKE_CURRENT_BINARY_DIR}" SCENERTX_REAL_BINARY_DIR)
+file(REAL_PATH "${SCENERTX_COMPAT_BUILD_DIR}" SCENERTX_REAL_COMPAT_BUILD_DIR)
+set(SCENERTX_BINARY_DIR_IS_COMPAT_BUILD_DIR OFF)
+if(SCENERTX_REAL_BINARY_DIR STREQUAL SCENERTX_REAL_COMPAT_BUILD_DIR)
+    set(SCENERTX_BINARY_DIR_IS_COMPAT_BUILD_DIR ON)
+endif()
 
 # -----------------------
 # Флаги для конкретной сборки
@@ -113,18 +119,22 @@ if(APPLE AND USE_METAL_RENDERER)
         VERBATIM
     )
 
-    set(METAL_LIB_COMPAT ${SCENERTX_COMPAT_BUILD_DIR}/RayTrace.metallib)
+    if(SCENERTX_BINARY_DIR_IS_COMPAT_BUILD_DIR)
+        add_custom_target(Shader ALL DEPENDS ${METAL_LIB})
+    else()
+        set(METAL_LIB_COMPAT ${SCENERTX_COMPAT_BUILD_DIR}/RayTrace.metallib)
 
-    add_custom_command(
-        OUTPUT ${METAL_LIB_COMPAT}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${SCENERTX_COMPAT_BUILD_DIR}
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${METAL_LIB} ${METAL_LIB_COMPAT}
-        DEPENDS ${METAL_LIB}
-        COMMENT "Copying RayTrace.metallib to build/RayTrace.metallib"
-        VERBATIM
-    )
+        add_custom_command(
+            OUTPUT ${METAL_LIB_COMPAT}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SCENERTX_COMPAT_BUILD_DIR}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${METAL_LIB} ${METAL_LIB_COMPAT}
+            DEPENDS ${METAL_LIB}
+            COMMENT "Copying RayTrace.metallib to build/RayTrace.metallib"
+            VERBATIM
+        )
 
-    add_custom_target(Shader ALL DEPENDS ${METAL_LIB_COMPAT})
+        add_custom_target(Shader ALL DEPENDS ${METAL_LIB_COMPAT})
+    endif()
 endif()
 
 # -----------------------
@@ -164,14 +174,16 @@ add_executable(SceneRTXTester
     $<$<AND:$<BOOL:${WIN32}>,$<BOOL:${USE_HIP_RENDERER}>>:${SRC_HIP}>
 )
 
-add_custom_command(TARGET SceneRTXTester POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${SCENERTX_COMPAT_BUILD_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:SceneRTXTester>"
-        "${SCENERTX_COMPAT_BUILD_DIR}/SceneRTXTester${CMAKE_EXECUTABLE_SUFFIX}"
-    COMMENT "Copying SceneRTXTester to build/SceneRTXTester${CMAKE_EXECUTABLE_SUFFIX}"
-    VERBATIM
-)
+if(NOT SCENERTX_BINARY_DIR_IS_COMPAT_BUILD_DIR)
+    add_custom_command(TARGET SceneRTXTester POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SCENERTX_COMPAT_BUILD_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:SceneRTXTester>"
+            "${SCENERTX_COMPAT_BUILD_DIR}/SceneRTXTester${CMAKE_EXECUTABLE_SUFFIX}"
+        COMMENT "Copying SceneRTXTester to build/SceneRTXTester${CMAKE_EXECUTABLE_SUFFIX}"
+        VERBATIM
+    )
+endif()
 
 target_compile_definitions(SceneRTXTester PRIVATE
     $<$<BOOL:${USE_METAL_RENDERER}>:USE_METAL_RENDERER>
@@ -187,6 +199,7 @@ target_include_directories(SceneRTXTester PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Classes
     ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Structures
     ${CMAKE_CURRENT_SOURCE_DIR}/Headers/ShaderSpecific
+    ${CMAKE_CURRENT_SOURCE_DIR}/Headers/Patterns
     ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs
     ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs/json-develop/single_include
     ${CMAKE_CURRENT_SOURCE_DIR}/ExternalLibs/stb-master

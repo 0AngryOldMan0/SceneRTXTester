@@ -2,8 +2,6 @@
   "cmake.useCMakePresets": "always",
   "cmake.useVsDeveloperEnvironment": "always",
   "cmake.configureOnOpen": false,
-  "cmake.defaultConfigurePreset": "windows-hip-debug",
-  "cmake.defaultBuildPreset": "windows-hip-debug",
   "cmake.preferredGenerators": [
     "NMake Makefiles",
     "Ninja",

@@ -9,20 +9,7 @@
 // Forward declaration
 class Renderer;
 
-/**
- * @brief Self-registering renderer factory pattern
- *
- * Solves the "tight coupling" problem by allowing renderers to register
- * themselves at compile time without modifying RenderManager.
- *
- * Usage:
- *   // In HIPRenderer.cpp, at the end of the file:
- *   REGISTER_RENDERER("HIP", []() { return std::make_unique<HIPRenderer>(); });
- *
- *   // In main.cpp:
- *   auto registry = RendererRegistry::getInstance();
- *   auto renderer = registry->createRenderer("HIP");
- */
+
 class RendererRegistry
 {
 public:
