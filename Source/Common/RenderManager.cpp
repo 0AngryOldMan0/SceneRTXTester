@@ -32,10 +32,10 @@ namespace
     }
 
     // Reuses pixel buffer to avoid repeated allocations while saving multiple frames.
-    void SaveFrameBufferToPNG(const std::vector<Vec3> &framebuffer,
-                              int width,
-                              int height,
-                              const std::string &filename)
+    void SaveFrameBufferToPNGImpl(const std::vector<Vec3> &framebuffer,
+                                  int width,
+                                  int height,
+                                  const std::string &filename)
     {
         if (width <= 0 || height <= 0)
             throw std::runtime_error("Invalid image size while saving PNG");
@@ -103,6 +103,14 @@ namespace
 
         return schedule;
     }
+}
+
+void SaveFrameBufferToPNG(const std::vector<Vec3> &framebuffer,
+                          int width,
+                          int height,
+                          const std::string &filename)
+{
+    SaveFrameBufferToPNGImpl(framebuffer, width, height, filename);
 }
 
 RenderManager::RenderManager()

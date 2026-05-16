@@ -23,6 +23,13 @@ enum class TextureRenderMode
     Preview = 1
 };
 
+// Shared PNG writer used by both RenderManager and main.cpp pipeline.
+// Throws std::runtime_error on write errors.
+void SaveFrameBufferToPNG(const std::vector<Vec3> &framebuffer,
+                          int width,
+                          int height,
+                          const std::string &filename);
+
 class RenderManager
 {
 public:

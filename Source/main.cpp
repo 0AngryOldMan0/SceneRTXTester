@@ -21,8 +21,8 @@
 #include "RenderManager.h"
 #include "SceneMetaLoader.h"
 #include "Renderer.h"
-#include "../Headers/Patterns/RendererFactory.h"
-#include "../Headers/Patterns/RenderCommand.h"
+#include "RendererFactory.h"
+#include "RenderCommand.h"
 
 namespace fs = std::filesystem;
 
@@ -142,14 +142,6 @@ namespace
         }
     }
 
-    static std::string DetectRendererName(const std::vector<std::unique_ptr<Renderer>> &renderers)
-    {
-        if (renderers.empty() || !renderers.front())
-            return {};
-
-        return renderers.front()->getName();
-    }
-
     struct RenderDimensions
     {
         int width = 1920;
@@ -200,6 +192,13 @@ namespace
     {
         for (auto &renderer : renderers)
             renderer->setImageSize(width, height);
+    }
+
+    static fs::path MakeAbsoluteBestEffort(const fs::path &path)
+    {
+        std::error_code ec;
+        const fs::path absolutePath = fs::absolute(path, ec);
+        return ec ? path : absolutePath;
     }
 }
 
@@ -391,11 +390,18 @@ int main(int argc, char **argv)
         scene.buildGlobalBVH(bvhStrategy);
         const auto tBVH1 = Clock::now();
 
-        const std::string rendererName = DetectRendererName(renderers);
-
         fs::path outDir = fs::path("Results") / "GPUFrames";
         std::error_code ec;
         fs::create_directories(outDir, ec);
+        if (ec)
+        {
+            std::cerr << "Failed to create output directory '" << outDir.string()
+                      << "': " << ec.message() << "\n";
+            return 1;
+        }
+
+        outDir = MakeAbsoluteBestEffort(outDir);
+        std::cout << "Frame output directory: " << outDir.string() << "\n";
 
         const auto tRender0 = Clock::now();
 
@@ -428,9 +434,8 @@ int main(int argc, char **argv)
                 }
 
                 const std::string camName = MakeSafeName(metaCameras[ci].name);
-                const fs::path base =
-                    outDir /
-                    (rendererName + "_TextureFrame_Cam" + std::to_string(ci) + "_" + camName);
+                bool savedAnyFrame = false;
+                bool hadSaveOrRenderError = false;
 
                 // Render with all available renderers
                 for (auto &renderer : renderers)
@@ -445,15 +450,46 @@ int main(int argc, char **argv)
                     if (!renderer->renderTexture(scene, cam, framebuffer))
                     {
                         std::cerr << "Rendering failed for " << renderer->getName() << "\n";
+                        hadSaveOrRenderError = true;
                         continue;
                     }
+
+                    const fs::path framePath =
+                        outDir /
+                        (MakeSafeName(renderer->getName()) + "_TextureFrame_Cam" + std::to_string(ci) + "_" + camName + "_0.png");
+
+                    try
+                    {
+                        SaveFrameBufferToPNG(framebuffer, renderDims.width, renderDims.height, framePath.string());
+                        savedAnyFrame = true;
+                        std::cout << "    Saved frame: " << framePath.string() << "\n";
+                    }
+                    catch (const std::exception &saveError)
+                    {
+                        hadSaveOrRenderError = true;
+                        std::cerr << "Failed to save frame for " << renderer->getName()
+                                  << ": " << saveError.what() << "\n";
+                    }
                 }
-                std::cout << "Frames for camera: <" << ci << "> generated successfully\n";
+
+                if (savedAnyFrame)
+                {
+                    std::cout << "Frames for camera: <" << ci << "> generated successfully\n";
+                }
+                else
+                {
+                    std::cerr << "No frames were saved for camera: <" << ci << ">\n";
+                }
+                if (hadSaveOrRenderError)
+                {
+                    std::cerr << "Camera <" << ci << ">: one or more render/save steps failed\n";
+                }
             }
         }
         else
         {
-            const fs::path base = outDir / (rendererName + "_TextureFrame_DefaultCamera");
+            bool savedAnyFrame = false;
+            bool hadSaveOrRenderError = false;
 
             // Render with all available renderers
             for (auto &renderer : renderers)
@@ -465,10 +501,40 @@ int main(int argc, char **argv)
                 if (!renderer->renderTexture(scene, cam, framebuffer))
                 {
                     std::cerr << "Rendering failed for " << renderer->getName() << "\n";
+                    hadSaveOrRenderError = true;
                     continue;
                 }
+
+                const fs::path framePath =
+                    outDir /
+                    (MakeSafeName(renderer->getName()) + "_TextureFrame_DefaultCamera_0.png");
+
+                try
+                {
+                    SaveFrameBufferToPNG(framebuffer, imageWidth, imageHeight, framePath.string());
+                    savedAnyFrame = true;
+                    std::cout << "  Saved frame: " << framePath.string() << "\n";
+                }
+                catch (const std::exception &saveError)
+                {
+                    hadSaveOrRenderError = true;
+                    std::cerr << "Failed to save frame for " << renderer->getName()
+                              << ": " << saveError.what() << "\n";
+                }
             }
-            std::cout << "Frames for default camera generated successfully\n";
+
+            if (savedAnyFrame)
+            {
+                std::cout << "Frames for default camera generated successfully\n";
+            }
+            else
+            {
+                std::cerr << "No frames were saved for default camera\n";
+            }
+            if (hadSaveOrRenderError)
+            {
+                std::cerr << "Default camera: one or more render/save steps failed\n";
+            }
         }
 
         const auto tRender1 = Clock::now();
