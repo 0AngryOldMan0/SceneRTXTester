@@ -543,7 +543,8 @@ static void ApplyPackedOrmChannelConventionHint(const std::string& hint,
 static bool IsExplicitEmissiveMaterialName(std::string_view s)
 {
     return ContainsAny(s, {
-        "emissive", "light_on", "lighton", "neon", "headlight", "bulb_lit"
+        "emissive", "light_on", "lighton", "neon", "headlight", "bulb_lit",
+        "tunnel_light", "overhead_light", "traffic_light"
     });
 }
 
@@ -809,6 +810,15 @@ static void DumpMaterialPayloadIfRequested(const std::vector<SceneMetaMaterial>&
             << "SceneMetaLoader: material payload name='" << material.name
             << "' model=" << MasterMaterialModelName(material.masterMaterialModel)
             << " base='" << material.baseMaterialAssetPath << "'"
+            << " emissionTexIndex=" << material.emissionTexIndex
+            << " emissionUvSet=" << material.emissionUvSet
+            << " emissionColor=("
+            << material.emissionColor.x << ","
+            << material.emissionColor.y << ","
+            << material.emissionColor.z << ")"
+            << " emissionStrength=" << material.emissionStrength
+            << " thinEmissive=" << (material.thinEmissiveSurface ? 1 : 0)
+            << " emissionAlphaMask=" << (material.emissionUseAlphaMask ? 1 : 0)
             << " ormChannels=("
             << static_cast<int>(material.ormChannels.occlusion) << ","
             << static_cast<int>(material.ormChannels.roughness) << ","
@@ -1384,7 +1394,7 @@ static SceneMetaMaterial MakeBackendPbrMaterial(const SceneMetaMaterial& src)
     {
         constexpr float kMaxBakedEmissionStrength = 120.0f;
         const float clampedStrength = std::clamp(emissionStrength, 0.0f, kMaxBakedEmissionStrength);
-        return clampedStrength * 0.001f;
+        return clampedStrength * 0.002f;
     }
 
     enum class LightIntensityUnits : int32_t
@@ -2467,7 +2477,7 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     m.emissionTexIndex = -1;
 
                 bool allowEmission = false;
-                if (!isDecalMaterial && !materialLooksNonEmissive && !materialLooksHousing)
+                if (!isDecalMaterial && !materialLooksNonEmissive)
                 {
                     if (explicitEmissiveStrength > 0.0f)
                     {
@@ -2479,6 +2489,12 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                     }
                     else if (m.emissionTexIndex >= 0 && (texLooksEmissive || materialLooksExplicitEmissive))
                     {
+                        allowEmission = true;
+                    }
+                    else if (materialLooksHousing && emissionColorNonZero)
+                    {
+                        // UE tunnel fixtures often expose emissive through a vector parameter
+                        // while keeping a non-emissive/utility texture in the "Emissive" slot.
                         allowEmission = true;
                     }
                 }

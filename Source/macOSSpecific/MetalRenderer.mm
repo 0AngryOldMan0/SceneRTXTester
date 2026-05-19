@@ -718,8 +718,8 @@ struct MaterialGPU_PBR
     float   specialScalar3;
     float   specialScalar4;
     float   specialScalar5;
-    float   _pad2;
-    float   _pad3;
+    float   normalUvScale;
+    float   primaryUvScale;
 };
 static_assert(sizeof(MaterialGPU_PBR) == 120, "MaterialGPU_PBR size must be 120 bytes");
 static_assert(sizeof(MaterialGPU) == 16, "MaterialGPU size must be 16 bytes");
@@ -1244,8 +1244,8 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         mp.specialScalar3    = sm.specialScalar3;
         mp.specialScalar4    = sm.specialScalar4;
         mp.specialScalar5    = sm.specialScalar5;
-        mp._pad2             = 0.0f;
-        mp._pad3             = 0.0f;
+        mp.normalUvScale     = sm.tunnelSurfaceParams.normalUvScale;
+        mp.primaryUvScale    = sm.tunnelSurfaceParams.primaryUvScale;
 
         if constexpr (has_member_normalTexIndex<SceneMetaMaterial>::value)
             mp.normalTexIndex = mapLinear(sm.normalTexIndex);
@@ -1987,6 +1987,29 @@ static bool EnsureSceneBuffersUploaded(const std::vector<BVHNode> &tlasNodes,
         dst.attenuationRadius = src.attenuationRadius;
         dst.ownerId = src.ownerId;
         gpuLights.push_back(dst);
+    }
+
+    if (const char* dumpLightEnv = std::getenv("SCENERTX_METAL_DUMP_LIGHTS");
+        dumpLightEnv != nullptr && dumpLightEnv[0] != '\0' && dumpLightEnv[0] != '0')
+    {
+        const std::size_t dumpCount = std::min<std::size_t>(gpuLights.size(), 48u);
+        for (std::size_t i = 0; i < dumpCount; ++i)
+        {
+            const LightGPU& l = gpuLights[i];
+            std::cerr << "MetalRenderer: light[" << i << "]"
+                      << " type=" << l.type
+                      << " intensity=" << l.intensity
+                      << " color=(" << l.color.x << "," << l.color.y << "," << l.color.z << ")"
+                      << " radius=" << l.radius
+                      << " softRadius=" << l.softSourceRadius
+                      << " sourceLength=" << l.sourceLength
+                      << " spotSize=" << l.spotSize
+                      << " spotBlend=" << l.spotBlend
+                      << " attenuationRadius=" << l.attenuationRadius
+                      << " flags=" << l.flags
+                      << " ownerId=" << l.ownerId
+                      << "\n";
+        }
     }
 
     const LightGPU dummyLight{};

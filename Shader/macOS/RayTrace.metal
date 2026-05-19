@@ -11,7 +11,7 @@ constant float EMISSION_LIGHT_EXPOSURE_GPU     = 1.0f;   // emissive lighting al
 constant float ENV_INTENSITY_GPU               = 0.10f;  // subtle fallback only; scene lights should dominate
 constant float LIGHT_FALLOFF_DISTANCE_SCALE    = 1.0f;   // use exported light distance/falloff as-is
 constant float LIGHT_ATTENUATION_RADIUS_SCALE  = 1.15f;  // slight UE-like soft extension for practical reach in large tunnel scenes
-constant float LOCAL_LIGHT_EXPOSURE_GPU        = 0.10f;  // base calibration for local finite lights after world-unit -> meter conversion
+constant float LOCAL_LIGHT_EXPOSURE_GPU        = 0.06f;  // reduce local light dominance so emissive fixtures participate in scene energy
 constant float VOLUME_FOG_DENSITY_SCALE        = 0.035f; // remap exported UE fog_density into subtle per-meter extinction
 constant float VOLUME_FOG_START_FADE_METERS    = 30.0f;  // avoid a hard fog wall at start distance
 constant float VOLUME_AMBIENT_SCATTER_SCALE    = 0.010f; // keep global fog contribution in haze range
@@ -256,8 +256,8 @@ struct MaterialGPU_PBR
     float specialScalar3;
     float specialScalar4;
     float specialScalar5;
-    float _pad2;
-    float _pad3;
+    float normalUvScale;
+    float primaryUvScale;
 };
 
 constant int MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = 1;
@@ -592,7 +592,7 @@ inline float computeFiniteLightAttenuation(const device LightGPU& light,
     float attenuationRadiusScale = LIGHT_ATTENUATION_RADIUS_SCALE;
     if (light.type == LIGHT_TYPE_POINT)
     {
-        attenuationRadiusScale *= 1.55f;
+        attenuationRadiusScale *= 1.20f;
     }
     else if (light.type == LIGHT_TYPE_SPOT)
     {
@@ -1964,18 +1964,11 @@ inline float3 evaluateMaterialEmissionPBR(MaterialGPU_PBR mp,
         return emissive;
     }
 
-    float3 emissive = emissiveBase;
-    if (mp.emissionTexIndex >= 0 && uint(mp.emissionTexIndex) < MAX_BASE_TEX)
-    {
-        const float4 eTex = sceneTextures[uint(mp.emissionTexIndex)].sample(g_texSampler, uvEmission);
-        if ((mp.flags & MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK) != 0)
-            emissive *= sampleEmissiveMask(eTex);
-        else
-            emissive *= eTex.rgb;
-    }
-
+    // Headlight emissive is driven purely by emissive color + Fresnel effect.
+    // Use base texture luminance only for dirt/opacity factor, NOT as emissive mask.
     if (mp.specialModel == SPECIAL_MATERIAL_UE_HEADLIGHT)
     {
+        float3 emissive = emissiveBase;
         const float baseLuma = clamp01(luminance3(baseColorTex));
         const float innerGlow = clamp01(mp.specialScalar0);
         const float transparency = clamp01(mp.specialScalar4);
@@ -1986,6 +1979,17 @@ inline float3 evaluateMaterialEmissionPBR(MaterialGPU_PBR mp,
         const float glowGain = (0.95f + innerGlow * 0.30f) * (0.75f + baseLuma * 0.35f);
         const float rimGain = 1.0f + rim * 0.10f * transparency;
         emissive *= max(dirtTransmission * glowGain * rimGain, 0.25f);
+        return emissive;
+    }
+
+    float3 emissive = emissiveBase;
+    if (mp.emissionTexIndex >= 0 && uint(mp.emissionTexIndex) < MAX_BASE_TEX)
+    {
+        const float4 eTex = sceneTextures[uint(mp.emissionTexIndex)].sample(g_texSampler, uvEmission);
+        if ((mp.flags & MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK) != 0)
+            emissive *= sampleEmissiveMask(eTex);
+        else
+            emissive *= eTex.rgb;
     }
 
     return emissive;
@@ -3476,13 +3480,14 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             if (hasMatPBR)
             {
                 MaterialGPU_PBR mp = materialsPBR[matId];
-                const float2 uvBase      = fract(selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet));
-                const float2 uvEmission  = fract(selectUvSet(uv0, uv1, uv2, mp.emissionUvSet));
-                const float2 uvNormal    = fract(selectUvSet(uv0, uv1, uv2, mp.normalUvSet));
-                const float2 uvOrm       = fract(selectUvSet(uv0, uv1, uv2, mp.ormUvSet));
-                const float2 uvRoughness = fract(selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet));
-                const float2 uvMetallic  = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet));
-                const float2 uvOcclusion = fract(selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet));
+                const float primaryScale = max(mp.primaryUvScale, 1.0e-3f);
+                const float2 uvBase      = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet)  * primaryScale;
+                const float2 uvEmission  = selectUvSet(uv0, uv1, uv2, mp.emissionUvSet)   * primaryScale;
+                const float2 uvNormal    = selectUvSet(uv0, uv1, uv2, mp.normalUvSet)     * max(mp.normalUvScale, 1.0e-3f);
+                const float2 uvOrm       = selectUvSet(uv0, uv1, uv2, mp.ormUvSet)        * primaryScale;
+                const float2 uvRoughness = selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet)  * primaryScale;
+                const float2 uvMetallic  = selectUvSet(uv0, uv1, uv2, mp.metallicUvSet)   * primaryScale;
+                const float2 uvOcclusion = selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet)  * primaryScale;
                 const int ormChannelAO        = mp.ormChannelOcclusion;
                 const int ormChannelRoughness = mp.ormChannelRoughness;
                 const int ormChannelMetallic  = mp.ormChannelMetallic;
@@ -3592,26 +3597,6 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 }
             }
 
-            if (isThinEmissiveSurface)
-            {
-                radiance += throughput * emitted;
-                ray.origin = hitPos + ray.direction * EPSILON_POS;
-                continue;
-            }
-
-            if (bounce == 0)
-            {
-                applyProjectedDecalsPrimary(hitPos, Ng, Ns, baseColor, roughness,
-                                           decals, decalCount, sceneTextures);
-                if (s == 0)
-                {
-                    result.depth = hit.t;
-                    result.albedo = max(baseColor, float3(0.0f));
-                    result.normal = normalize(Ns);
-                    result.hitMask = 1.0f;
-                }
-            }
-
             if (uvDebugMode != 0u && bounce == 0)
             {
                 float2 uvW = uv;
@@ -3638,6 +3623,26 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                     case 16: result.color = bits16; return result;
                     case 17: result.color = baseColorFactor; return result;
                     default: break;
+                }
+            }
+
+            if (isThinEmissiveSurface)
+            {
+                radiance += throughput * emitted;
+                ray.origin = hitPos + ray.direction * EPSILON_POS;
+                continue;
+            }
+
+            if (bounce == 0)
+            {
+                applyProjectedDecalsPrimary(hitPos, Ng, Ns, baseColor, roughness,
+                                           decals, decalCount, sceneTextures);
+                if (s == 0)
+                {
+                    result.depth = hit.t;
+                    result.albedo = max(baseColor, float3(0.0f));
+                    result.normal = normalize(Ns);
+                    result.hitMask = 1.0f;
                 }
             }
 
