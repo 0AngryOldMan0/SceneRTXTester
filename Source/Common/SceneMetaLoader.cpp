@@ -2390,6 +2390,8 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
 
                 m.decalTilingU         = ReadSceneScalarParam(jm, {"TilingU"}, 1.0f);
                 m.decalTilingV         = ReadSceneScalarParam(jm, {"TilingV"}, 1.0f);
+                m.uvTilingU            = m.decalTilingU;
+                m.uvTilingV            = m.decalTilingV;
                 m.decalOpacityPower    = std::max(0.0f, ReadSceneScalarParam(jm, {"Damage Opacity Power"}, 1.0f));
                 m.decalNormalIntensity = std::max(0.0f, ReadSceneScalarParam(jm, {"Normal Intenisty", "Normal Intensity"}, 1.0f));
                 m.decalRoughnessBias   = ReadSceneScalarParam(jm, {"RoughMultiply"}, 0.0f);
@@ -3388,6 +3390,8 @@ bool LoadLightsAndMaterialsFromMeta(const std::string &metaPath,
             // a DBuffer-like projected decal with opacity/detail modulation.
             m.decalTilingU         = ReadNamedScalarParam(jm, "TilingU", 1.0f);
             m.decalTilingV         = ReadNamedScalarParam(jm, "TilingV", 1.0f);
+            m.uvTilingU            = m.decalTilingU;
+            m.uvTilingV            = m.decalTilingV;
             m.decalOpacityPower    = std::max(0.0f, ReadNamedScalarParam(jm, "Damage Opacity Power", 1.0f));
             m.decalNormalIntensity = std::max(0.0f, ReadNamedScalarParam(jm, "Normal Intenisty", 1.0f));
             m.decalRoughnessBias   = ReadNamedScalarParam(jm, "RoughMultiply", 0.0f);

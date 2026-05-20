@@ -718,8 +718,8 @@ struct MaterialGPU_PBR
     float   specialScalar3;
     float   specialScalar4;
     float   specialScalar5;
-    float   normalUvScale;
-    float   primaryUvScale;
+    float   tilingU;
+    float   tilingV;
 };
 static_assert(sizeof(MaterialGPU_PBR) == 120, "MaterialGPU_PBR size must be 120 bytes");
 static_assert(sizeof(MaterialGPU) == 16, "MaterialGPU size must be 16 bytes");
@@ -1244,8 +1244,8 @@ static bool EnsureMaterialAndTexturesLoaded(const SceneMetaResources* metaRes)
         mp.specialScalar3    = sm.specialScalar3;
         mp.specialScalar4    = sm.specialScalar4;
         mp.specialScalar5    = sm.specialScalar5;
-        mp.normalUvScale     = sm.tunnelSurfaceParams.normalUvScale;
-        mp.primaryUvScale    = sm.tunnelSurfaceParams.primaryUvScale;
+        mp.tilingU           = sm.uvTilingU;
+        mp.tilingV           = sm.uvTilingV;
 
         if constexpr (has_member_normalTexIndex<SceneMetaMaterial>::value)
             mp.normalTexIndex = mapLinear(sm.normalTexIndex);

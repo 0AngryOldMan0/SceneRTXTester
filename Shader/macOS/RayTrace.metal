@@ -256,8 +256,8 @@ struct MaterialGPU_PBR
     float specialScalar3;
     float specialScalar4;
     float specialScalar5;
-    float normalUvScale;
-    float primaryUvScale;
+    float tilingU;
+    float tilingV;
 };
 
 constant int MATERIAL_FLAG_EMISSION_USE_ALPHA_MASK = 1;
@@ -3480,14 +3480,14 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
             if (hasMatPBR)
             {
                 MaterialGPU_PBR mp = materialsPBR[matId];
-                const float primaryScale = max(mp.primaryUvScale, 1.0e-3f);
-                const float2 uvBase      = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet)  * primaryScale;
-                const float2 uvEmission  = selectUvSet(uv0, uv1, uv2, mp.emissionUvSet)   * primaryScale;
-                const float2 uvNormal    = selectUvSet(uv0, uv1, uv2, mp.normalUvSet)     * max(mp.normalUvScale, 1.0e-3f);
-                const float2 uvOrm       = selectUvSet(uv0, uv1, uv2, mp.ormUvSet)        * primaryScale;
-                const float2 uvRoughness = selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet)  * primaryScale;
-                const float2 uvMetallic  = selectUvSet(uv0, uv1, uv2, mp.metallicUvSet)   * primaryScale;
-                const float2 uvOcclusion = selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet)  * primaryScale;
+                const float2 tiling      = max(float2(mp.tilingU, mp.tilingV), float2(1.0e-3f));
+                const float2 uvBase      = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet)  * tiling;
+                const float2 uvEmission  = selectUvSet(uv0, uv1, uv2, mp.emissionUvSet)   * tiling;
+                const float2 uvNormal    = selectUvSet(uv0, uv1, uv2, mp.normalUvSet)     * tiling;
+                const float2 uvOrm       = selectUvSet(uv0, uv1, uv2, mp.ormUvSet)        * tiling;
+                const float2 uvRoughness = selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet)  * tiling;
+                const float2 uvMetallic  = selectUvSet(uv0, uv1, uv2, mp.metallicUvSet)   * tiling;
+                const float2 uvOcclusion = selectUvSet(uv0, uv1, uv2, mp.occlusionUvSet)  * tiling;
                 const int ormChannelAO        = mp.ormChannelOcclusion;
                 const int ormChannelRoughness = mp.ormChannelRoughness;
                 const int ormChannelMetallic  = mp.ormChannelMetallic;

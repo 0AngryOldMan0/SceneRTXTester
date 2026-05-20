@@ -220,6 +220,9 @@ struct SceneMetaMaterial
     int32_t metallicUvSet     = 0;
     int32_t occlusionUvSet    = 0;
 
+    float uvTilingU = 1.0f;
+    float uvTilingV = 1.0f;
+
     SceneMetaTunnelFloorMaterialParams tunnelFloorParams{};
     SceneMetaTunnelSurfaceMaterialParams tunnelSurfaceParams{};
     SceneMetaOrmChannels ormChannels{};
