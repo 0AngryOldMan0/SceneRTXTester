@@ -2053,6 +2053,23 @@ inline float3 resolveTriangleEmissionTextured(const device Triangle *triangles,
         if (mp.baseColorTexIndex >= 0 && uint(mp.baseColorTexIndex) < MAX_BASE_TEX)
             baseColorTex = sceneTextures[uint(mp.baseColorTexIndex)].sample(g_texSampler, uvBase).rgb;
         emissive = evaluateMaterialEmissionPBR(mp, float3(tri.emission), baseColorTex, uvBase, uvEmission, 1.0f, sceneTextures);
+        // PBR energy conservation: metallic surfaces don't emit diffusely (light source path).
+        if (mp.specialModel == 0)
+        {
+            float metallicVal = 0.0f;
+            if (mp.ormTexIndex >= 0 && uint(mp.ormTexIndex) < MAX_BASE_TEX)
+            {
+                const float2 uvOrm = fract(selectUvSet(uv0, uv1, uv2, mp.ormUvSet));
+                float4 orm = sceneTextures[uint(mp.ormTexIndex)].sample(g_texSampler, uvOrm);
+                metallicVal = clamp01(sampledChannel(orm, mp.ormChannelMetallic, 0.0f));
+            }
+            else if (mp.metallicTexIndex >= 0 && uint(mp.metallicTexIndex) < MAX_BASE_TEX)
+            {
+                const float2 uvMet = fract(selectUvSet(uv0, uv1, uv2, mp.metallicUvSet));
+                metallicVal = clamp01(sceneTextures[uint(mp.metallicTexIndex)].sample(g_texSampler, uvMet).r);
+            }
+            emissive *= (1.0f - metallicVal);
+        }
     }
     else if (materials != nullptr && materialCount > 0u && matId >= 0 && uint(matId) < materialCount)
     {
@@ -2473,9 +2490,9 @@ inline void applyProjectedDecalsPrimary(float3 hitPos,
         if (fabs(depth) > d.sizeX || fabs(lx) > d.sizeZ || fabs(ly) > d.sizeY)
             continue;
 
-        // Decals should project onto the receiver facing the projection direction, not onto both sides
-        // of the box. Using an unsigned facing test was one of the reasons why the decal frame became visible.
-        float facing = dot(NgNorm, -projAxis);
+        // UE exports axis_x as the outward surface normal (matches the receiver's normal), so the
+        // correct facing test is dot(NgNorm, projAxis) > 0, not dot(NgNorm, -projAxis).
+        float facing = dot(NgNorm, projAxis);
         if (facing < 0.06f)
             continue;
 
@@ -3483,7 +3500,12 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
                 const float2 tiling      = max(float2(mp.tilingU, mp.tilingV), float2(1.0e-3f));
                 const float2 uvBase      = selectUvSet(uv0, uv1, uv2, mp.baseColorUvSet)  * tiling;
                 const float2 uvEmission  = selectUvSet(uv0, uv1, uv2, mp.emissionUvSet)   * tiling;
-                const float2 uvNormal    = selectUvSet(uv0, uv1, uv2, mp.normalUvSet)     * tiling;
+                // specialScalar0 > 0 on default (non-special) materials encodes normalUvScale —
+                // the normal map tiled at a different frequency than the base colour (e.g. x5
+                // for MM_Tunnel_Wall_01a concrete).  Zero means "same tiling as base".
+                const float2 normalTiling = (mp.specialModel == 0 && mp.specialScalar0 > 1.0e-3f)
+                                              ? float2(mp.specialScalar0) : tiling;
+                const float2 uvNormal    = selectUvSet(uv0, uv1, uv2, mp.normalUvSet)     * normalTiling;
                 const float2 uvOrm       = selectUvSet(uv0, uv1, uv2, mp.ormUvSet)        * tiling;
                 const float2 uvRoughness = selectUvSet(uv0, uv1, uv2, mp.roughnessUvSet)  * tiling;
                 const float2 uvMetallic  = selectUvSet(uv0, uv1, uv2, mp.metallicUvSet)   * tiling;
@@ -3551,6 +3573,11 @@ inline PathTraceTextureResult tracePathPixelTextured(uint2                  gid,
 
                 const float rawNdV = max(dot(NgRaw, normalize(-ray.direction)), 0.0f);
                 emissive = evaluateMaterialEmissionPBR(mp, hit.emission, baseColorTexOnly, uvBase, uvEmission, rawNdV, sceneTextures);
+                // PBR energy conservation: metallic surfaces cannot emit diffusely.
+                // Special light-emitting models (bulbs, headlights) are exempt — their
+                // emission is intentional and their metallic value is near 0 anyway.
+                if (mp.specialModel == 0)
+                    emissive *= (1.0f - metallic);
             }
             else
             {

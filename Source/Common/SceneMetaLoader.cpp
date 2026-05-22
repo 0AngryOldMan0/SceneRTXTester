@@ -2388,6 +2388,12 @@ static bool LoadCamerasFromSceneExportJson(const json& j,
                 m.emissionUvSet = ClampUvSetIndex(emissionUvExplicit ? parsedEmissionUvSet : m.baseColorUvSet);
                 PopulateTunnelMasterMaterialParamsFromSceneExport(jm, m, m.baseColorUvSet);
 
+                // Forward normalUvScale → specialScalar0 so the GPU shader can sample the
+                // normal map at a different UV frequency than the base colour texture.
+                // specialScalar0 == 0 means "use the shared tilingU/V", so only write > 0.
+                if (m.tunnelSurfaceParams.normalUvScale > 1.0e-3f)
+                    m.specialScalar0 = m.tunnelSurfaceParams.normalUvScale;
+
                 m.decalTilingU         = ReadSceneScalarParam(jm, {"TilingU"}, 1.0f);
                 m.decalTilingV         = ReadSceneScalarParam(jm, {"TilingV"}, 1.0f);
                 m.uvTilingU            = m.decalTilingU;

@@ -481,6 +481,8 @@ namespace
         hash.addU8(material.ormChannels.occlusion);
         hash.addU8(material.ormChannels.roughness);
         hash.addU8(material.ormChannels.metallic);
+        hash.addFloat(material.uvTilingU);
+        hash.addFloat(material.uvTilingV);
     }
 
     static void HashDecal(HashBuilder64 &hash,
