@@ -94,6 +94,14 @@ namespace SceneRTV2
         TArray<FVector4f> SkinIndices;    // 4 bone indices (cast from uint16)
         TArray<FVector4f> SkinWeights;
         bool bHasVertexColors = false;
+        bool bNaniteFallback  = false;    // true when geometry came from FMeshDescription (no CPU LOD)
+    };
+
+    struct FSkeletonRecord
+    {
+        TArray<FString>    BoneNames;      // bone index → name
+        TArray<int32>      ParentIndices;  // bone index → parent index (-1 = root)
+        TArray<FTransform> LocalBindPose;  // bone index → local-space bind transform
     };
 
     struct FMeshAsset
@@ -105,6 +113,7 @@ namespace SceneRTV2
         TArray<FMeshLod> Lods;
         FBox LocalBounds = FBox(ForceInitToZero);
         TArray<FStableId> SlotMaterialIds; // per material slot — references into Materials table
+        FSkeletonRecord Skeleton;          // populated for SkeletalMesh kind only
     };
 
     struct FLandscapeLayerWeight

@@ -12,6 +12,11 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkinWeightVertexBuffer.h"
 
+#if WITH_EDITORONLY_DATA
+#include "MeshDescription.h"
+#include "StaticMeshAttributes.h"
+#endif
+
 namespace SceneRTV2::Mesh
 {
     namespace
@@ -21,13 +26,87 @@ namespace SceneRTV2::Mesh
          * access, we temporarily flip bAllowCPUAccess via DerivedDataCache fetch
          * (5.2 supports this via FStaticMeshOperations).
          *
-         * TODO(iterative): implement Nanite-only fallback when LODResources.Num() == 0.
+         * For Nanite-only meshes (LODResources empty), falls back to FMeshDescription
+         * source data (editor builds only); sets Out.bNaniteFallback = true.
          */
+#if WITH_EDITORONLY_DATA
+        static bool ReadStaticMeshLodFromMeshDescription(UStaticMesh* SrcMesh, FMeshLod& Out)
+        {
+            const FMeshDescription* MD = SrcMesh->GetMeshDescription(0);
+            if (!MD) { return false; }
+
+            FStaticMeshAttributes Attribs(const_cast<FMeshDescription&>(*MD));
+
+            auto Positions  = Attribs.GetVertexPositions();
+            auto Normals    = Attribs.GetVertexInstanceNormals();
+            auto Tangents   = Attribs.GetVertexInstanceTangents();
+            auto BinorSigns = Attribs.GetVertexInstanceBinormalSigns();
+            auto UVChannels = Attribs.GetVertexInstanceUVs();
+
+            const int32 NumVIs     = MD->VertexInstances().GetArraySize();
+            const int32 NumUVChans = FMath::Max((int32)UVChannels.GetNumChannels(), 1);
+
+            Out.LodIndex        = 0;
+            Out.bNaniteFallback = true;
+            Out.Positions.SetNum(NumVIs);
+            Out.Normals.SetNum(NumVIs);
+            Out.Tangents.SetNum(NumVIs);
+            Out.UVs.SetNum(NumUVChans);
+            for (auto& Ch : Out.UVs) { Ch.SetNum(NumVIs); }
+
+            for (FVertexInstanceID ViID : MD->VertexInstances().GetElementIDs())
+            {
+                const int32 i    = ViID.GetValue();
+                const FVertexID V = MD->GetVertexInstanceVertex(ViID);
+                Out.Positions[i]  = Positions[V];
+                Out.Normals[i]    = Normals[ViID];
+                Out.Tangents[i]   = FVector4f(Tangents[ViID], BinorSigns[ViID]);
+                for (int32 c = 0; c < (int32)UVChannels.GetNumChannels(); ++c)
+                    Out.UVs[c][i] = UVChannels.Get(ViID, c);
+            }
+
+            // Build flat index buffer and per-polygon-group sections.
+            for (FPolygonGroupID PgID : MD->PolygonGroups().GetElementIDs())
+            {
+                const uint32 FirstIdx = (uint32)Out.Indices.Num();
+                for (FPolygonID PolyID : MD->GetPolygonGroupPolygons(PgID))
+                {
+                    for (FTriangleID TriID : MD->GetPolygonTriangleIDs(PolyID))
+                    {
+                        TArrayView<const FVertexInstanceID> VIs = MD->GetTriangleVertexInstances(TriID);
+                        Out.Indices.Add((uint32)VIs[0].GetValue());
+                        Out.Indices.Add((uint32)VIs[1].GetValue());
+                        Out.Indices.Add((uint32)VIs[2].GetValue());
+                    }
+                }
+                const uint32 Count = (uint32)Out.Indices.Num() - FirstIdx;
+                if (Count == 0) { continue; }
+                FMeshSection MS;
+                MS.SectionIndex      = Out.Sections.Num();
+                MS.MaterialSlotIndex = PgID.GetValue();
+                MS.FirstIndex        = FirstIdx;
+                MS.IndexCount        = Count;
+                Out.Sections.Add(MoveTemp(MS));
+            }
+
+            return Out.Indices.Num() > 0;
+        }
+#endif // WITH_EDITORONLY_DATA
+
         bool ReadStaticMeshLod(UStaticMesh* SrcMesh, int32 LodIndex, FMeshLod& Out)
         {
             if (!SrcMesh || !SrcMesh->GetRenderData()) { return false; }
             const FStaticMeshRenderData& RD = *SrcMesh->GetRenderData();
-            if (!RD.LODResources.IsValidIndex(LodIndex)) { return false; }
+            if (!RD.LODResources.IsValidIndex(LodIndex))
+            {
+#if WITH_EDITORONLY_DATA
+                if (LodIndex == 0 && SrcMesh->NaniteSettings.bEnabled)
+                {
+                    return ReadStaticMeshLodFromMeshDescription(SrcMesh, Out);
+                }
+#endif
+                return false;
+            }
             const FStaticMeshLODResources& Src = RD.LODResources[LodIndex];
 
             const int32 NumVerts = Src.VertexBuffers.PositionVertexBuffer.GetNumVertices();
@@ -116,17 +195,37 @@ namespace SceneRTV2::Mesh
         const int32 NumLods = Ctx.Settings->bExportAllLODs
             ? SrcMesh->GetRenderData()->LODResources.Num()
             : 1;
-        for (int32 i = 0; i < NumLods; ++i)
+
+        // Nanite-only meshes have no CPU LODResources. Gate on bExportNaniteFallback
+        // (uses FMeshDescription source data, editor-only) or skip with warning.
+        const bool bNaniteOnly = SrcMesh->NaniteSettings.bEnabled
+                                 && SrcMesh->GetRenderData()->LODResources.Num() == 0;
+        if (bNaniteOnly && Ctx.Settings && !Ctx.Settings->bExportNaniteFallback)
         {
-            FMeshLod Lod;
-            if (!ReadStaticMeshLod(SrcMesh, i, Lod))
+            Ctx.AddIssue(TEXT("warn"), TEXT("mesh"),
+                FString::Printf(TEXT("Nanite mesh skipped (bExportNaniteFallback=false): %s"), *AssetKey),
+                Asset.Id.Value);
+        }
+        else
+        {
+            // For Nanite-only meshes always attempt LOD 0; otherwise respect NumLods.
+            const int32 LodCount = (bNaniteOnly) ? 1 : NumLods;
+            for (int32 i = 0; i < LodCount; ++i)
             {
-                Ctx.AddIssue(TEXT("warn"), TEXT("mesh"),
-                    FString::Printf(TEXT("Cannot read LOD %d for %s"), i, *AssetKey),
-                    Asset.Id.Value);
-                continue;
+                FMeshLod Lod;
+                if (!ReadStaticMeshLod(SrcMesh, i, Lod))
+                {
+                    Ctx.AddIssue(TEXT("warn"), TEXT("mesh"),
+                        FString::Printf(TEXT("Cannot read LOD %d for %s"), i, *AssetKey),
+                        Asset.Id.Value);
+                    continue;
+                }
+                if (Lod.bNaniteFallback)
+                {
+                    Asset.Kind = SceneRTSceneExporterV2::EMeshSourceKind::NaniteFallback;
+                }
+                Asset.Lods.Add(MoveTemp(Lod));
             }
-            Asset.Lods.Add(MoveTemp(Lod));
         }
 
         for (int32 s = 0; s < SrcMesh->GetStaticMaterials().Num(); ++s)
@@ -294,6 +393,22 @@ namespace SceneRTV2::Mesh
             }
 
             Asset.Lods.Add(MoveTemp(Lod));
+        }
+
+        // Bind pose from FReferenceSkeleton
+        {
+            const FReferenceSkeleton& RefSkel = SkelMesh->GetRefSkeleton();
+            const int32 NumBones = RefSkel.GetNum();
+            const TArray<FTransform>& BindPose = RefSkel.GetRefBonePose();
+            Asset.Skeleton.BoneNames.SetNumUninitialized(NumBones);
+            Asset.Skeleton.ParentIndices.SetNumUninitialized(NumBones);
+            Asset.Skeleton.LocalBindPose.SetNum(NumBones);
+            for (int32 b = 0; b < NumBones; ++b)
+            {
+                Asset.Skeleton.BoneNames[b]     = RefSkel.GetBoneName(b).ToString();
+                Asset.Skeleton.ParentIndices[b]  = RefSkel.GetParentIndex(b);
+                Asset.Skeleton.LocalBindPose[b]  = BindPose[b];
+            }
         }
 
         // Material slots

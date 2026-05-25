@@ -349,6 +349,41 @@ namespace SceneRTV2::Writer
                 SlotArr.Add(MakeShared<FJsonValueString>(S.Value));
             }
             J->SetArrayField(TEXT("slot_material_ids"), SlotArr);
+
+            // Skeleton / bind pose (skeletal meshes only)
+            if (M.Skeleton.BoneNames.Num() > 0)
+            {
+                TArray<TSharedPtr<FJsonValue>> NamesArr, ParentsArr, BindPoseArr;
+                for (int32 b = 0; b < M.Skeleton.BoneNames.Num(); ++b)
+                {
+                    NamesArr.Add(MakeShared<FJsonValueString>(M.Skeleton.BoneNames[b]));
+                    ParentsArr.Add(MakeShared<FJsonValueNumber>(M.Skeleton.ParentIndices[b]));
+
+                    // Each bind transform as flat [tx,ty,tz, qx,qy,qz,qw, sx,sy,sz]
+                    const FTransform& T = M.Skeleton.LocalBindPose[b];
+                    TArray<TSharedPtr<FJsonValue>> Xf;
+                    const FVector Tr = T.GetTranslation();
+                    const FQuat   Ro = T.GetRotation();
+                    const FVector Sc = T.GetScale3D();
+                    Xf.Add(MakeShared<FJsonValueNumber>(Tr.X));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Tr.Y));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Tr.Z));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Ro.X));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Ro.Y));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Ro.Z));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Ro.W));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Sc.X));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Sc.Y));
+                    Xf.Add(MakeShared<FJsonValueNumber>(Sc.Z));
+                    BindPoseArr.Add(MakeShared<FJsonValueArray>(Xf));
+                }
+                TSharedRef<FJsonObject> SkelJ = MakeShared<FJsonObject>();
+                SkelJ->SetArrayField(TEXT("bone_names"),     NamesArr);
+                SkelJ->SetArrayField(TEXT("parent_indices"), ParentsArr);
+                SkelJ->SetArrayField(TEXT("local_bind_pose"), BindPoseArr);
+                J->SetObjectField(TEXT("skeleton"), SkelJ);
+            }
+
             MeshArr.Add(MakeShared<FJsonValueObject>(J));
         }
         Root->SetArrayField(TEXT("meshes"), MeshArr);
@@ -769,6 +804,25 @@ namespace SceneRTV2::Writer
         Root->SetNumberField(TEXT("counts_postprocess"), Ctx.PostProcess.Num());
         Root->SetNumberField(TEXT("counts_landscapes"),  Ctx.Landscapes.Num());
         Root->SetNumberField(TEXT("counts_issues"),      Ctx.Issues.Num());
+
+        // SHA1 checksums for every artifact written before the manifest.
+        // manifest.json itself is not included (written after this block).
+        TSharedRef<FJsonObject> Checksums = MakeShared<FJsonObject>();
+        for (const TCHAR* N : Names)
+        {
+            TArray<uint8> Bytes;
+            if (FFileHelper::LoadFileToArray(Bytes, *(Ctx.OutputDir / FString(N))))
+            {
+                uint8 Digest[20];
+                FSHA1::HashBuffer(Bytes.GetData(), Bytes.Num(), Digest);
+                FString Hex;
+                Hex.Reserve(40);
+                for (uint8 B : Digest) { Hex += FString::Printf(TEXT("%02x"), B); }
+                Checksums->SetStringField(FString(N), Hex);
+            }
+        }
+        Root->SetObjectField(TEXT("checksums"), Checksums);
+
         return WriteJsonObject(Ctx.OutputDir / TEXT("manifest.json"), Root, OutError);
     }
 

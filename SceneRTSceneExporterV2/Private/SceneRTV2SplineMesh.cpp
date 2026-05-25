@@ -8,6 +8,7 @@
 #include "GameFramework/Actor.h"
 #include "Engine/StaticMesh.h"
 #include "StaticMeshResources.h"
+#include "Materials/MaterialInterface.h"
 
 namespace SceneRTV2::SplineMesh
 {
@@ -60,7 +61,28 @@ namespace SceneRTV2::SplineMesh
             float((&MeshMax.X)[Component->ForwardAxis] - (&MeshMin.X)[Component->ForwardAxis]));
 
         const float SegmentLen = Component->GetSplineLength(); // local along forward axis
-        const float TileWorldSize = 100.f; // TODO: read from resolved material param
+
+        // Resolve tile world size from material scalar parameter.
+        // Fallback: MeshLength — 1 tile per segment, UV.X stays continuous via
+        // cumulative arclen so no seam artifact even with the fallback value.
+        float TileWorldSize = MeshLength;
+        if (UMaterialInterface* Mat = Component->GetMaterial(0))
+        {
+            static const FName TileParamNames[] = {
+                TEXT("TileWorldSize"), TEXT("TileSize"),   TEXT("WorldSize"),
+                TEXT("TextureTile"),   TEXT("TilingSize"),
+            };
+            for (const FName& ParamName : TileParamNames)
+            {
+                float ParamValue = 0.f;
+                if (Mat->GetScalarParameterValue(FMaterialParameterInfo(ParamName), ParamValue)
+                    && ParamValue > KINDA_SMALL_NUMBER)
+                {
+                    TileWorldSize = ParamValue;
+                    break;
+                }
+            }
+        }
 
         for (int32 v = 0; v < NumVerts; ++v)
         {

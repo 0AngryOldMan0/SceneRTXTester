@@ -6,6 +6,10 @@
 #include "Engine/Texture2D.h"
 #include "Engine/TextureCube.h"
 #include "Engine/VolumeTexture.h"
+#include "Engine/TexturePlatformData.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/TextureRenderTargetResource.h"
+#include "RenderingThread.h"
 #include "VT/RuntimeVirtualTexture.h"
 
 namespace SceneRTV2::Texture
@@ -35,6 +39,31 @@ namespace SceneRTV2::Texture
                 default:           return F::Unknown;
             }
         }
+
+        // Reads all mips from FTexturePlatformData into Rec.Payload (raw BCn / uncompressed bytes).
+        // Each mip is appended sequentially; consumer locates them by computing BCn block sizes.
+        static void ExtractMipChain(FTexturePlatformData* PlatformData, FTextureRecord& Rec)
+        {
+            if (!PlatformData || PlatformData->Mips.IsEmpty()) { return; }
+
+            int32 WrittenMips = 0;
+            for (FTexture2DMipMap& Mip : PlatformData->Mips)
+            {
+                Mip.BulkData.ForceBulkDataResident();
+                const int64 MipSize = Mip.BulkData.GetBulkDataSize();
+                if (MipSize <= 0) { continue; }
+
+                const void* Ptr = Mip.BulkData.LockReadOnly();
+                if (Ptr)
+                {
+                    Rec.Payload.Append(static_cast<const uint8*>(Ptr),
+                                       static_cast<int32>(MipSize));
+                    ++WrittenMips;
+                }
+                Mip.BulkData.Unlock();
+            }
+            if (WrittenMips > 0) { Rec.NumMips = WrittenMips; }
+        }
     }
 
     FStableId Resolve(UTexture* TextureInput, FExportContext& Ctx)
@@ -60,6 +89,7 @@ namespace SceneRTV2::Texture
             Rec.Height = T2D->GetSizeY();
             Rec.NumMips = T2D->GetNumMips();
             Rec.PixelFormat = MapFormat(T2D->GetPixelFormat());
+            ExtractMipChain(T2D->GetPlatformData(), Rec);
         }
         else if (UTextureCube* TCube = Cast<UTextureCube>(TextureInput))
         {
@@ -68,6 +98,7 @@ namespace SceneRTV2::Texture
             Rec.NumSlices = 6;
             Rec.NumMips = TCube->GetNumMips();
             Rec.PixelFormat = MapFormat(TCube->GetPixelFormat());
+            ExtractMipChain(TCube->GetPlatformData(), Rec);
         }
         else if (UVolumeTexture* TVol = Cast<UVolumeTexture>(TextureInput))
         {
@@ -76,33 +107,79 @@ namespace SceneRTV2::Texture
             Rec.Depth  = TVol->GetSizeZ();
             Rec.NumMips = TVol->GetNumMips();
             Rec.PixelFormat = MapFormat(TVol->GetPixelFormat());
+            ExtractMipChain(TVol->GetPlatformData(), Rec);
+        }
+        else if (UTextureRenderTarget2D* TRT = Cast<UTextureRenderTarget2D>(TextureInput))
+        {
+            Rec.Width      = TRT->SizeX;
+            Rec.Height     = TRT->SizeY;
+            Rec.NumMips    = 1;
+            Rec.PixelFormat = MapFormat(TRT->GetFormat());
+
+            // Pixel readback: flush render commands first, then read via game-thread resource.
+            FlushRenderingCommands();
+            if (FTextureRenderTarget2DResource* RTRes =
+                    static_cast<FTextureRenderTarget2DResource*>(
+                        TRT->GameThread_GetRenderTargetResource()))
+            {
+                TArray<FColor> Pixels;
+                if (RTRes->ReadPixels(Pixels) && Pixels.Num() == Rec.Width * Rec.Height)
+                {
+                    Rec.Payload.Append(reinterpret_cast<const uint8*>(Pixels.GetData()),
+                                       Pixels.Num() * sizeof(FColor));
+                    Rec.PixelFormat = SceneRTSceneExporterV2::ETexturePixelFormat::BGRA8;
+                }
+                else
+                {
+                    Ctx.AddIssue(TEXT("warn"), TEXT("texture"),
+                        FString::Printf(TEXT("ReadPixels failed for RenderTarget %s"), *Key),
+                        Rec.Id.Value);
+                }
+            }
         }
         else
         {
-            // VolumeTexture / RenderTarget / future types — TODO(iterative).
             Ctx.AddIssue(TEXT("warn"), TEXT("texture"),
                 FString::Printf(TEXT("Unsupported texture class %s for %s"),
                     *TextureInput->GetClass()->GetName(), *Key),
                 Rec.Id.Value);
         }
 
-        // TODO(iterative): pull the source-art mip chain from Texture->Source
-        // and pack into Rec.Payload. For now we register the descriptor only;
-        // the consumer can locate the raw payload via SourcePath.
-
         const int32 Idx = Ctx.Textures.Add(MoveTemp(Rec));
         Ctx.TextureByPath.Add(Key, Idx);
         return Ctx.Textures[Idx].Id;
     }
 
-    FStableId BakeRuntimeVirtualTexture(URuntimeVirtualTexture* /*Rvt*/,
+    FStableId BakeRuntimeVirtualTexture(URuntimeVirtualTexture* Rvt,
                                         const FBox& /*WorldBounds*/,
-                                        FExportContext& /*Ctx*/)
+                                        FExportContext& Ctx)
     {
-        // TODO(iterative): allocate a UTextureRenderTarget2D matching the RVT
-        // material set, render the world bounds into it via FRVTBaker, read
-        // back the RT pixels into Rec.Payload, mark bRvtBaked.
-        return {};
+        if (!Rvt) { return {}; }
+
+        // If a pre-baked streaming texture exists, reuse it directly.
+        if (UTexture2D* Streaming = Rvt->GetStreamingTexture())
+        {
+            return Resolve(Streaming, Ctx);
+        }
+
+        // Full FRVTBaker bake requires renderer access — not viable in export context.
+        // Record the RVT with an empty payload so the material can still
+        // reference a stable ID.
+        const FString Key = Rvt->GetPathName();
+        if (const int32* Existing = Ctx.TextureByPath.Find(Key))
+        {
+            return Ctx.Textures[*Existing].Id;
+        }
+        FTextureRecord Rec;
+        Rec.Id         = Identity::ForTexture(Ctx.SceneGuid, Rvt);
+        Rec.SourcePath = Key;
+        Rec.bRvtBaked  = false;
+        Ctx.AddIssue(TEXT("warn"), TEXT("texture"),
+            FString::Printf(TEXT("RVT %s has no streaming texture; pixel data unavailable"), *Key),
+            Rec.Id.Value);
+        const int32 Idx = Ctx.Textures.Add(MoveTemp(Rec));
+        Ctx.TextureByPath.Add(Key, Idx);
+        return Ctx.Textures[Idx].Id;
     }
 
     void DetectOrmChannelLayout(const UTexture* Texture, int32& OutAo, int32& OutRough, int32& OutMetal)

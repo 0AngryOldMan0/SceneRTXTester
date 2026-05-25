@@ -43,6 +43,7 @@ public class SceneRTSceneExporterV2 : ModuleRules
             "MaterialUtilities",
             "Renderer",
             "Niagara",
+            "CinematicCamera",
         });
     }
 }

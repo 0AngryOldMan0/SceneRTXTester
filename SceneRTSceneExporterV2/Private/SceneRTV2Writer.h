@@ -29,7 +29,7 @@ namespace SceneRTV2::Writer
     bool WritePostProcessJson(const FExportContext& Ctx, FString* OutError);
     /** Writes landscapes.json (per-landscape metadata + layer weight refs). */
     bool WriteLandscapesJson(const FExportContext& Ctx, FString* OutError);
-    /** Writes manifest.json (versions, GUID, sizes, sha256 of every artifact). */
+    /** Writes manifest.json (versions, GUID, counts, sha1 checksums of every artifact). */
     bool WriteManifest(const FExportContext& Ctx, FString* OutError);
     /** Writes validation.json (issues collected during pipeline). */
     bool WriteValidationReport(const FExportContext& Ctx, FString* OutError);

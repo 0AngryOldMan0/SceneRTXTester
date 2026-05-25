@@ -18,9 +18,9 @@ namespace SceneRTV2::Mesh
      * Collects geometry for a UStaticMeshComponent (or HISM/ISM).
      *
      * Handles, regardless of asset:
-     *  - Nanite-only meshes: walks the Nanite resources to pull the fallback
-     *    mesh, or — if bExportNaniteFallback=false — refuses and emits a
-     *    validation warning.
+     *  - Nanite-only meshes (no CPU LOD): falls back to FMeshDescription source
+     *    data (editor builds only), or — if bExportNaniteFallback=false —
+     *    records the asset without LODs and emits a validation warning.
      *  - bAllowCPUAccess=false meshes: temporarily renders the LOD via
      *    FStaticMeshOperations to obtain CPU triangles.
      *  - Multiple LODs per settings.

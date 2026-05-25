@@ -16,6 +16,7 @@
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/VolumetricCloudComponent.h"
 #include "Camera/CameraComponent.h"
+#include "CineCameraComponent.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/Texture.h"
 #include "Engine/TextureCube.h"
@@ -148,6 +149,14 @@ namespace SceneRTV2::Cameras
         Rec.Transform = CameraComp->GetComponentTransform();
         Rec.FieldOfView = CameraComp->FieldOfView;
         Rec.AspectRatio = CameraComp->AspectRatio;
+
+        if (const UCineCameraComponent* Cine = Cast<UCineCameraComponent>(CameraComp))
+        {
+            Rec.Focal         = Cine->CurrentFocalLength;
+            Rec.Aperture      = Cine->CurrentAperture;
+            Rec.FocusDistance = Cine->FocusSettings.ManualFocusDistance;
+        }
+
         Rec.PostProcess = SceneRTV2::PostProcess::ReflectPostProcessSettings(CameraComp->PostProcessSettings);
 
         Ctx.Cameras.Add(MoveTemp(Rec));
