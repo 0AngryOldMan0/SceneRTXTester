@@ -98,10 +98,12 @@ namespace SceneRTV2::SplineMesh
 
             Lod.Positions[v] = FVector3f(World);
 
-            FVector3f Normal = LODSrc.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(v).ToFVector3f();
+            const FVector4f TZ = LODSrc.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(v);
+            FVector3f Normal = FVector3f(TZ.X, TZ.Y, TZ.Z);
             Lod.Normals[v] = FVector3f(Slice.TransformVectorNoScale(FVector(Normal)));
 
-            const FVector3f Tan = LODSrc.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(v).ToFVector3f();
+            const FVector4f TX = LODSrc.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(v);
+            const FVector3f Tan = FVector3f(TX.X, TX.Y, TX.Z);
             const FVector TanWorld = Slice.TransformVectorNoScale(FVector(Tan));
             Lod.Tangents[v] = FVector4f(FVector3f(TanWorld), 1.f);
 

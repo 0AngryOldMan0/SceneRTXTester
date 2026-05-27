@@ -71,7 +71,7 @@ namespace SceneRTV2::Mesh
                 const uint32 FirstIdx = (uint32)Out.Indices.Num();
                 for (FPolygonID PolyID : MD->GetPolygonGroupPolygons(PgID))
                 {
-                    for (FTriangleID TriID : MD->GetPolygonTriangleIDs(PolyID))
+                    for (FTriangleID TriID : MD->GetPolygonTriangles(PolyID))
                     {
                         TArrayView<const FVertexInstanceID> VIs = MD->GetTriangleVertexInstances(TriID);
                         Out.Indices.Add((uint32)VIs[0].GetValue());
@@ -128,8 +128,11 @@ namespace SceneRTV2::Mesh
             for (int32 v = 0; v < NumVerts; ++v)
             {
                 Out.Positions[v] = Src.VertexBuffers.PositionVertexBuffer.VertexPosition(v);
-                Out.Normals[v]   = Src.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(v).ToFVector3f();
-                FVector4f T(Src.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(v).ToFVector3f(), 1.f);
+                // In UE5.2, VertexTangentZ/X return FVector4f directly.
+                const FVector4f TZ = Src.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(v);
+                Out.Normals[v]   = FVector3f(TZ.X, TZ.Y, TZ.Z);
+                const FVector4f TX = Src.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(v);
+                FVector4f T(TX.X, TX.Y, TX.Z, 1.f);
                 Out.Tangents[v]  = T;
                 for (int32 c = 0; c < NumUVChans; ++c)
                 {
@@ -319,7 +322,8 @@ namespace SceneRTV2::Mesh
             Lod.Tangents.SetNumUninitialized(NumVerts);
             for (uint32 v = 0; v < NumVerts; ++v)
             {
-                Lod.Normals[v]  = LODData.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(v).ToFVector3f();
+                const FVector4f SkelTZ = LODData.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(v);
+                Lod.Normals[v]  = FVector3f(SkelTZ.X, SkelTZ.Y, SkelTZ.Z);
                 Lod.Tangents[v] = LODData.StaticVertexBuffers.StaticMeshVertexBuffer.VertexTangentX(v);
             }
 
@@ -369,7 +373,7 @@ namespace SceneRTV2::Mesh
             const FSkinWeightVertexBuffer& SkinBuf = LODData.SkinWeightVertexBuffer;
             if (SkinBuf.GetNumVertices() == NumVerts)
             {
-                const int32 NumInfluences = FMath::Min(SkinBuf.GetMaxBoneInfluences(), 4);
+                const int32 NumInfluences = FMath::Min((int32)SkinBuf.GetMaxBoneInfluences(), 4);
                 Lod.SkinIndices.SetNumZeroed(NumVerts);
                 Lod.SkinWeights.SetNumZeroed(NumVerts);
                 for (uint32 v = 0; v < NumVerts; ++v)
@@ -452,7 +456,7 @@ namespace SceneRTV2::Mesh
         // many transforms from a single component.
         if (Ctx.Primitives.Num() > 0 && Ctx.Primitives.Last().ComponentPath == Component->GetPathName())
         {
-            Ctx.Primitives.Pop(EAllowShrinking::No);
+            Ctx.Primitives.Pop(false);
         }
 
         const int32 NumInstances = Component->GetInstanceCount();

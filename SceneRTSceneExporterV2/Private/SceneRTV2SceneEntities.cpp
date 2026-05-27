@@ -16,7 +16,7 @@
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/VolumetricCloudComponent.h"
 #include "Camera/CameraComponent.h"
-#include "CineCameraComponent.h"
+// UCineCameraComponent accessed via reflection to avoid hard module dependency.
 #include "Engine/PostProcessVolume.h"
 #include "Engine/Texture.h"
 #include "Engine/TextureCube.h"
@@ -150,11 +150,22 @@ namespace SceneRTV2::Cameras
         Rec.FieldOfView = CameraComp->FieldOfView;
         Rec.AspectRatio = CameraComp->AspectRatio;
 
-        if (const UCineCameraComponent* Cine = Cast<UCineCameraComponent>(CameraComp))
+        // Attempt to read CineCamera-specific properties via reflection.
+        // This works on UCineCameraComponent without a hard include dependency.
+        static const FName NameFocal("CurrentFocalLength");
+        static const FName NameAperture("CurrentAperture");
+        static const FName NameFocusSettings("FocusSettings");
+        static const FName NameManualFocusDist("ManualFocusDistance");
+
+        if (const FFloatProperty* P = CastField<FFloatProperty>(CameraComp->GetClass()->FindPropertyByName(NameFocal)))
+            Rec.Focal = P->GetPropertyValue_InContainer(CameraComp);
+        if (const FFloatProperty* P = CastField<FFloatProperty>(CameraComp->GetClass()->FindPropertyByName(NameAperture)))
+            Rec.Aperture = P->GetPropertyValue_InContainer(CameraComp);
+        if (const FStructProperty* SP = CastField<FStructProperty>(CameraComp->GetClass()->FindPropertyByName(NameFocusSettings)))
         {
-            Rec.Focal         = Cine->CurrentFocalLength;
-            Rec.Aperture      = Cine->CurrentAperture;
-            Rec.FocusDistance = Cine->FocusSettings.ManualFocusDistance;
+            const void* FocusAddr = SP->ContainerPtrToValuePtr<void>(CameraComp);
+            if (const FFloatProperty* DP = CastField<FFloatProperty>(SP->Struct->FindPropertyByName(NameManualFocusDist)))
+                Rec.FocusDistance = DP->GetPropertyValue_InContainer(FocusAddr);
         }
 
         Rec.PostProcess = SceneRTV2::PostProcess::ReflectPostProcessSettings(CameraComp->PostProcessSettings);

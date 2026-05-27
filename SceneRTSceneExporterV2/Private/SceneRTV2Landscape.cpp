@@ -9,6 +9,7 @@
 #include "LandscapeComponent.h"
 #include "LandscapeInfo.h"
 #include "LandscapeLayerInfoObject.h"
+#include "LandscapeEdit.h"
 
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
@@ -228,11 +229,9 @@ namespace SceneRTV2::Landscape
 
             bool bExported = false;
 #if WITH_EDITOR
-            // 5.2: ULandscapeComponent::ExportToRawMesh signature is
-            //   (int32 InExportLOD, FMeshDescription& OutRawMesh,
-            //    const FBoxSphereBounds& InBounds, bool bIgnoreBounds)
-            const FBoxSphereBounds DummyBounds(Proxy->GetComponentsBoundingBox(true));
-            bExported = Component->ExportToRawMesh(ExportLod, Mesh, DummyBounds, /*bIgnoreBounds*/ true);
+            // UE5.2: ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRawMesh) — void, 2 params.
+            Component->ExportToRawMesh(ExportLod, Mesh);
+            bExported = Mesh.VertexInstances().Num() > 0;
 #endif
             FMeshLod Lod;
             bool bHaveGeometry = bExported && ConvertMeshDescriptionToLod(Mesh, Lod);

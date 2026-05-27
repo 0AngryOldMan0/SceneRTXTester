@@ -7,15 +7,19 @@ namespace SceneRTV2
     struct FExportContext;
 }
 class ULightComponent;
+class USkyLightComponent;
 class UDecalComponent;
 class UCameraComponent;
 class UPostProcessComponent;
 class APostProcessVolume;
+class USkyAtmosphereComponent;
+class UExponentialHeightFogComponent;
+class UVolumetricCloudComponent;
 
 namespace SceneRTV2::Lights
 {
     void CollectLight(ULightComponent* LightComp, FExportContext& Ctx);
-    void CollectSkyLight(class USkyLightComponent* SkyLight, FExportContext& Ctx);
+    void CollectSkyLight(USkyLightComponent* SkyLight, FExportContext& Ctx);
 }
 
 namespace SceneRTV2::Decals
@@ -47,7 +51,7 @@ namespace SceneRTV2::PostProcess
 
 namespace SceneRTV2::Atmosphere
 {
-    void CollectSkyAtmosphere(class USkyAtmosphereComponent* Comp, FExportContext& Ctx);
-    void CollectHeightFog(class UExponentialHeightFogComponent* Comp, FExportContext& Ctx);
-    void CollectVolumetricCloud(class UVolumetricCloudComponent* Comp, FExportContext& Ctx);
+    void CollectSkyAtmosphere(USkyAtmosphereComponent* Comp, FExportContext& Ctx);
+    void CollectHeightFog(UExponentialHeightFogComponent* Comp, FExportContext& Ctx);
+    void CollectVolumetricCloud(UVolumetricCloudComponent* Comp, FExportContext& Ctx);
 }

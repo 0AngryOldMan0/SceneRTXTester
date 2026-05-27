@@ -29,22 +29,8 @@ namespace SceneRTV2::Material
         {
             if (!Material) { return; }
 
-            // Global params.
+            // Global params (covers all associations in UE5.2+).
             Material->GetAllParameterInfoOfType(Type, OutInfos, OutGuids);
-
-            // Layered params (Material Layers / Blends).
-            TArray<FMaterialParameterInfo> LayerInfos;
-            TArray<FGuid> LayerGuids;
-            Material->GetAllParametersOfType(Type, LayerInfos, LayerGuids);
-            for (int32 i = 0; i < LayerInfos.Num(); ++i)
-            {
-                // GetAllParametersOfType returns ALL associations including Global; dedup.
-                if (!OutInfos.Contains(LayerInfos[i]))
-                {
-                    OutInfos.Add(LayerInfos[i]);
-                    OutGuids.Add(LayerGuids[i]);
-                }
-            }
         }
 
         void CapturePbrFlags(UMaterialInterface* Material, FMaterialRecord& Out)
