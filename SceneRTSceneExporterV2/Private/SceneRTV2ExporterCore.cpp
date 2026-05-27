@@ -116,7 +116,7 @@ namespace
             {
                 if (!Component || !Component->IsRegistered()) { continue; }
 
-                if (USplineMeshComponent* /*Spl*/ = Cast<USplineMeshComponent>(Component))
+                if (Cast<USplineMeshComponent>(Component))
                 {
                     continue; // handled above
                 }

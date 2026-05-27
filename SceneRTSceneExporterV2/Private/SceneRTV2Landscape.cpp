@@ -12,7 +12,6 @@
 
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
-#include "MeshDescriptionBuilder.h"
 
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInterface.h"

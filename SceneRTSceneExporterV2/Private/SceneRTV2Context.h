@@ -150,6 +150,8 @@ namespace SceneRTV2
         FStableId HoleMaterialId;
         TArray<FLandscapeComponentInfo> Components;
     };
+
+    struct FPrimitiveInstance
     {
         FStableId Id;
         FStableId MeshId;
